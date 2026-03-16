@@ -8,7 +8,9 @@
 </head>
 <body>
 
-<!-- ===== Topbar ===== -->
+<!-- ═══════════════════════════════════════════════════════════
+     TOP BAR  (logo + connection status dot)
+     ═══════════════════════════════════════════════════════════ -->
 <header class="topbar">
   <div class="topbar__logo">
     <span class="logo-icon">▶</span>
@@ -22,961 +24,1430 @@
 
 <main class="layout">
 
-  <!-- ===== LEFT SIDEBAR ===== -->
-  <aside class="sidebar">
+<!-- ═══════════════════════════════════════════════════════════
+     LEFT SIDEBAR  (connection + live transport status)
+     ═══════════════════════════════════════════════════════════ -->
+<aside class="sidebar">
 
-    <!-- Connection -->
-    <section class="card">
-      <h2 class="card__title">Connection</h2>
-      <div class="field-row">
-        <label for="inputHost">Host / IP</label>
-        <input id="inputHost" type="text" placeholder="192.168.1.100" />
+  <!-- ── Connection ─────────────────────────────────────────── -->
+  <section class="card">
+    <h2 class="card__title">Connection</h2>
+    <div class="field-row">
+      <label for="inputHost">Host / IP</label>
+      <input id="inputHost" type="text" placeholder="192.168.1.100" autocomplete="off" />
+    </div>
+    <div class="field-row">
+      <label for="inputPort">Port</label>
+      <input id="inputPort" type="number" value="9993" min="1" max="65535" />
+    </div>
+    <div class="btn-row" style="margin-top:var(--sp-sm)">
+      <button class="btn btn--primary" id="btnConnect" onclick="uiConnect()">Connect</button>
+      <button class="btn btn--danger"  id="btnDisconnect" onclick="uiDisconnect()" disabled>Disconnect</button>
+    </div>
+  </section>
+
+  <!-- ── Live timecode display ──────────────────────────────── -->
+  <section class="card">
+    <h2 class="card__title">Display Timecode</h2>
+    <div class="timecode-display" id="sidebarTimecode">--:--:--:--</div>
+  </section>
+
+  <!-- ── Transport status ───────────────────────────────────── -->
+  <section class="card">
+    <div class="card__title-row">
+      <h2 class="card__title">Transport</h2>
+      <button class="btn btn--xs" onclick="sendCmd('transport info')">↻</button>
+    </div>
+    <table class="info-table">
+      <tr><td>Status</td>  <td><span class="status-badge" id="tsStatus">—</span></td></tr>
+      <tr><td>Timecode</td><td id="tsTimecode" class="mono">—</td></tr>
+      <tr><td>Speed</td>   <td id="tsSpeed">—</td></tr>
+      <tr><td>Clip ID</td> <td id="tsClipId">—</td></tr>
+      <tr><td>Slot</td>    <td id="tsSlot">—</td></tr>
+      <tr><td>Format</td>  <td id="tsFormat">—</td></tr>
+      <tr><td>Loop</td>    <td id="tsLoop">—</td></tr>
+      <tr><td>Timeline</td><td id="tsTimeline">—</td></tr>
+      <tr><td>Dyn Range</td><td id="tsDynRange">—</td></tr>
+      <tr><td>Ref Lock</td><td id="tsRefLocked">—</td></tr>
+    </table>
+  </section>
+
+  <!-- ── Device info summary ────────────────────────────────── -->
+  <section class="card">
+    <div class="card__title-row">
+      <h2 class="card__title">Device</h2>
+      <button class="btn btn--xs" onclick="sendCmd('device info')">↻</button>
+    </div>
+    <table class="info-table">
+      <tr><td>Model</td>    <td id="devModel">—</td></tr>
+      <tr><td>SW Ver</td>   <td id="devSwVer">—</td></tr>
+      <tr><td>Protocol</td> <td id="devProto">—</td></tr>
+      <tr><td>Slots</td>    <td id="devSlots">—</td></tr>
+      <tr><td>Unique ID</td><td id="devId" style="font-size:.75em;word-break:break-all">—</td></tr>
+    </table>
+  </section>
+
+  <!-- ── Remote control state ───────────────────────────────── -->
+  <section class="card">
+    <div class="card__title-row">
+      <h2 class="card__title">Remote</h2>
+      <button class="btn btn--xs" onclick="sendCmd('remote')">↻</button>
+    </div>
+    <table class="info-table">
+      <tr><td>Enabled</td> <td id="remEnabled">—</td></tr>
+      <tr><td>Override</td><td id="remOverride">—</td></tr>
+    </table>
+  </section>
+
+</aside><!-- /sidebar -->
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAIN CONTENT  (tabs)
+     ═══════════════════════════════════════════════════════════ -->
+<section class="content">
+
+  <!-- Tab navigation -->
+  <nav class="tabs" id="tabNav">
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="transport">Transport</button>
+    <button class="tab" data-tab="clips">Clips</button>
+    <button class="tab" data-tab="slots">Slots&nbsp;/&nbsp;Disk</button>
+    <button class="tab" data-tab="config">Configuration</button>
+    <button class="tab" data-tab="notify">Notifications</button>
+    <button class="tab" data-tab="dynrange">Dyn&nbsp;Range</button>
+    <button class="tab" data-tab="slate">Slate</button>
+    <button class="tab" data-tab="nas">NAS</button>
+    <button class="tab" data-tab="advanced">Advanced</button>
+    <button class="tab" data-tab="console">Console</button>
+  </nav>
+
+  <!-- ═══════════════════════════════════════════════════════
+       DASHBOARD  – full device state at a glance
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel active" id="tab-dashboard">
+
+    <!-- Timecode hero -->
+    <div class="card" style="grid-column:1/-1">
+      <div class="card__title-row">
+        <h2 class="card__title">Live Display Timecode</h2>
+        <button class="btn btn--xs" onclick="sendCmd('transport info')">↻ Refresh</button>
       </div>
-      <div class="field-row">
-        <label for="inputPort">Port</label>
-        <input id="inputPort" type="number" value="9993" min="1" max="65535" />
+      <div class="timecode-display" id="dashTimecode">--:--:--:--</div>
+      <div style="text-align:center;font-size:.8em;color:var(--text-secondary);margin-top:4px">
+        Timeline&nbsp;TC:&nbsp;<span id="dashTlTimecode" class="mono">—</span>
+        &nbsp;·&nbsp; Input:&nbsp;<span id="dashInputFmt">—</span>
       </div>
-      <div class="btn-row">
-        <button class="btn btn--primary" id="btnConnect">Connect</button>
-        <button class="btn btn--danger" id="btnDisconnect" disabled>Disconnect</button>
+    </div>
+
+    <!-- Transport state -->
+    <div class="card">
+      <h2 class="card__title">Transport State</h2>
+      <div class="dash-grid">
+        <div class="dash-cell"><div class="dash-cell__label">Status</div>
+          <div class="dash-cell__value"><span class="status-badge" id="dashStatus">—</span></div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Speed</div>
+          <div class="dash-cell__value" id="dashSpeed">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Clip ID</div>
+          <div class="dash-cell__value" id="dashClipId">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Slot ID</div>
+          <div class="dash-cell__value" id="dashSlotId">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Slot Name</div>
+          <div class="dash-cell__value" id="dashSlotName">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Device Name</div>
+          <div class="dash-cell__value" id="dashDevName">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Video Format</div>
+          <div class="dash-cell__value" id="dashVidFmt">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Loop</div>
+          <div class="dash-cell__value" id="dashLoop">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Single Clip</div>
+          <div class="dash-cell__value" id="dashSingleClip">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Timeline</div>
+          <div class="dash-cell__value" id="dashTimeline">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Dynamic Range</div>
+          <div class="dash-cell__value" id="dashDynRange">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Ref Locked</div>
+          <div class="dash-cell__value" id="dashRefLocked">—</div></div>
       </div>
-      <div id="deviceInfoBox" hidden class="result-box" style="margin-top:.6rem"></div>
-    </section>
-
-    <!-- Transport status -->
-    <section class="card">
-      <h2 class="card__title">Transport <button class="btn btn--sm btn--secondary" style="float:right;margin-top:-.2rem" onclick="sendCmd('transport info')">↻</button></h2>
-      <table class="info-table">
-        <tr><td>Status</td>   <td><span id="tsStatus" class="status-badge">—</span></td></tr>
-        <tr><td>Display TC</td><td><span id="tsDisplayTC" class="mono">—</span></td></tr>
-        <tr><td>Timecode</td> <td><span id="tsTimecode"  class="mono">—</span></td></tr>
-        <tr><td>Clip</td>     <td><span id="tsClip">—</span></td></tr>
-        <tr><td>Slot</td>     <td><span id="tsSlot">—</span></td></tr>
-        <tr><td>Speed</td>    <td><span id="tsSpeed">—</span></td></tr>
-        <tr><td>Loop</td>     <td><span id="tsLoop">—</span></td></tr>
-        <tr><td>Format</td>   <td><span id="tsFormat">—</span></td></tr>
-        <tr><td>Timeline</td> <td><span id="tsTimeline">—</span></td></tr>
-        <tr><td>Dyn Range</td><td><span id="tsDynRange">—</span></td></tr>
-        <tr><td>Ref Locked</td><td><span id="tsRefLocked">—</span></td></tr>
-      </table>
-    </section>
-
-    <!-- Remote -->
-    <section class="card">
-      <h2 class="card__title">Remote Control</h2>
-      <div class="field-row"><label>Enabled</label>
-        <label class="toggle"><input type="checkbox" id="remoteEnabled" /><span class="slider"></span></label>
+      <!-- Quick transport controls in dashboard -->
+      <div class="transport-btns" style="margin-bottom:0">
+        <button class="tbtn" onclick="sendCmd('goto: timeline: start')" title="Timeline start">⏮</button>
+        <button class="tbtn" onclick="sendCmd('goto: clip id: -1')"    title="Prev clip">⏪</button>
+        <button class="tbtn tbtn--stop"   onclick="sendCmd('stop')"    title="Stop">⏹</button>
+        <button class="tbtn tbtn--play"   onclick="quickPlay()"        title="Play">⏵</button>
+        <button class="tbtn tbtn--record" onclick="quickRecord()"      title="Record">⏺</button>
+        <button class="tbtn" onclick="sendCmd('goto: clip id: +1')"    title="Next clip">⏩</button>
+        <button class="tbtn" onclick="sendCmd('goto: timeline: end')"  title="Timeline end">⏭</button>
       </div>
-      <div class="field-row"><label>Override</label>
-        <label class="toggle"><input type="checkbox" id="remoteOverride" /><span class="slider"></span></label>
+    </div>
+
+    <!-- Device info -->
+    <div class="card">
+      <h2 class="card__title">Device Information</h2>
+      <div class="dash-grid">
+        <div class="dash-cell"><div class="dash-cell__label">Model</div>
+          <div class="dash-cell__value" id="dashModel">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Software</div>
+          <div class="dash-cell__value" id="dashSwVer">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Protocol</div>
+          <div class="dash-cell__value" id="dashProto">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Slot Count</div>
+          <div class="dash-cell__value" id="dashSlotCount">—</div></div>
+        <div class="dash-cell" style="grid-column:span 2"><div class="dash-cell__label">Unique ID</div>
+          <div class="dash-cell__value" id="dashUniqueId" style="font-size:.78em">—</div></div>
       </div>
-      <div class="btn-row">
-        <button class="btn btn--secondary btn--sm" onclick="applyRemote()">Apply</button>
-        <button class="btn btn--secondary btn--sm" onclick="sendCmd('remote')">↻ Query</button>
+    </div>
+
+    <!-- Configuration summary -->
+    <div class="card">
+      <h2 class="card__title">Active Configuration</h2>
+      <div class="dash-grid">
+        <div class="dash-cell"><div class="dash-cell__label">Video Input</div>
+          <div class="dash-cell__value" id="dashCfgVidIn">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Audio Input</div>
+          <div class="dash-cell__value" id="dashCfgAudIn">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">File Format</div>
+          <div class="dash-cell__value" id="dashCfgFileFmt">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Audio Codec</div>
+          <div class="dash-cell__value" id="dashCfgAudCodec">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">TC Input</div>
+          <div class="dash-cell__value" id="dashCfgTcIn">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">TC Output</div>
+          <div class="dash-cell__value" id="dashCfgTcOut">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Record Trigger</div>
+          <div class="dash-cell__value" id="dashCfgRecTrig">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Rec Prefix</div>
+          <div class="dash-cell__value" id="dashCfgRecPrefix">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Ref Source</div>
+          <div class="dash-cell__value" id="dashCfgRefSrc">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">USB Spill</div>
+          <div class="dash-cell__value" id="dashCfgUsbSpill">—</div></div>
       </div>
-    </section>
+      <button class="btn btn--xs" onclick="sendCmd('configuration')" style="margin-top:var(--sp-sm)">↻ Refresh Config</button>
+    </div>
 
-  </aside><!-- /sidebar -->
-
-  <!-- ===== CENTRE CONTENT ===== -->
-  <section class="content">
-    <nav class="tabs" id="tabNav">
-      <button class="tab active" data-tab="transport">Transport</button>
-      <button class="tab" data-tab="clips">Clips</button>
-      <button class="tab" data-tab="slots">Slots&nbsp;/&nbsp;Disk</button>
-      <button class="tab" data-tab="config">Configuration</button>
-      <button class="tab" data-tab="notify">Notifications</button>
-      <button class="tab" data-tab="dynrange">Dyn&nbsp;Range</button>
-      <button class="tab" data-tab="slate">Slate</button>
-      <button class="tab" data-tab="nas">NAS</button>
-      <button class="tab" data-tab="advanced">Advanced</button>
-      <button class="tab" data-tab="console">Console</button>
-    </nav>
-
-    <!-- ==================== TRANSPORT ==================== -->
-    <div class="tab-panel active" id="tab-transport">
-
-      <div class="card">
-        <h2 class="card__title">Playback Controls</h2>
-        <div class="transport-btns">
-          <button class="tbtn" onclick="sendCmd('goto: timeline: start')" title="Go to timeline start">⏮</button>
-          <button class="tbtn" onclick="sendCmd('goto: clip id: -1')"     title="Previous clip">⏪</button>
-          <button class="tbtn tbtn--stop"   onclick="sendCmd('stop')"  title="Stop">⏹</button>
-          <button class="tbtn tbtn--play"   onclick="applyPlay()"       title="Play">⏵</button>
-          <button class="tbtn tbtn--record" onclick="applyRecord()"     title="Record">⏺</button>
-          <button class="tbtn" onclick="sendCmd('goto: clip id: +1')"    title="Next clip">⏩</button>
-          <button class="tbtn" onclick="sendCmd('goto: timeline: end')"  title="Go to timeline end">⏭</button>
-        </div>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="playSpeed">Speed (%)</label>
-            <input id="playSpeed" type="number" value="100" min="-5000" max="5000" />
-          </div>
-          <div class="field-row">
-            <label for="playLoop">Loop</label>
-            <label class="toggle"><input type="checkbox" id="playLoop" /><span class="slider"></span></label>
-          </div>
-          <div class="field-row">
-            <label for="playSingleClip">Single Clip</label>
-            <label class="toggle"><input type="checkbox" id="playSingleClip" /><span class="slider"></span></label>
-          </div>
-        </div>
+    <!-- Remote & troubleshooting -->
+    <div class="card">
+      <h2 class="card__title">Remote Control &amp; Troubleshooting</h2>
+      <div class="dash-grid">
+        <div class="dash-cell"><div class="dash-cell__label">Remote Enabled</div>
+          <div class="dash-cell__value" id="dashRemEnabled">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Override Active</div>
+          <div class="dash-cell__value" id="dashRemOverride">—</div></div>
       </div>
-
-      <div class="card">
-        <h2 class="card__title">Jog / Shuttle</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="jogTimecode">Jog Timecode</label>
-            <input id="jogTimecode" type="text" placeholder="00:00:00:00" class="mono" />
-          </div>
-          <div class="field-row"><button class="btn btn--secondary" onclick="applyJog()">Jog</button></div>
-          <div class="field-row">
-            <label for="shuttleSpeed">Shuttle Speed</label>
-            <input id="shuttleSpeed" type="number" value="0" min="-5000" max="5000" step="100" />
-          </div>
-          <div class="field-row"><button class="btn btn--secondary" onclick="applyShuttle()">Shuttle</button></div>
-        </div>
-        <div class="shuttle-presets">
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(-5000)">◀◀ MAX</button>
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(-1600)">◀◀ ×16</button>
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(-400)">◀◀ ×4</button>
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(-100)">◀ ×1</button>
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(0)">■ Stop</button>
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(100)">▶ ×1</button>
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(400)">▶▶ ×4</button>
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(1600)">▶▶ ×16</button>
-          <button class="btn btn--sm btn--secondary" onclick="shuttle(5000)">▶▶ MAX</button>
-        </div>
+      <p class="hint" style="margin-top:var(--sp-sm)">
+        If commands return <strong>111 remote control disabled</strong>, use
+        <em>remote: override: true</em> on the Advanced tab, or enable remote
+        on the HyperDeck front panel.
+      </p>
+      <div class="btn-row" style="margin-top:var(--sp-sm)">
+        <button class="btn btn--sm" onclick="sendCmd('remote: enable: true')">Enable Remote</button>
+        <button class="btn btn--sm" onclick="sendCmd('remote: override: true')">Override ON</button>
+        <button class="btn btn--sm btn--danger" onclick="sendCmd('remote: override: false')">Override OFF</button>
       </div>
 
-      <div class="card">
-        <h2 class="card__title">Go To</h2>
-        <p class="hint">Only one parameter is applied per goto command (per protocol spec).</p>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="gotoType">Navigate by</label>
-            <select id="gotoType">
-              <option value="clip_id">Clip ID</option>
-              <option value="clip_pos">Clip position</option>
-              <option value="timeline_pos">Timeline position</option>
-              <option value="timecode">Timecode</option>
-              <option value="slot">Slot ID</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="gotoValue">Value</label>
-            <input id="gotoValue" type="text" placeholder="e.g. 3, +1, start, 00:01:00:00" class="mono" />
-          </div>
-        </div>
-        <button class="btn btn--primary" onclick="applyGoto()">Go To</button>
+      <hr class="divider" />
+      <p class="hint">Common error codes:</p>
+      <div style="font-size:.78em;color:var(--text-secondary);line-height:2">
+        <strong>100</strong> syntax error &nbsp;·&nbsp;
+        <strong>101</strong> unsupported parameter &nbsp;·&nbsp;
+        <strong>102</strong> invalid value &nbsp;·&nbsp;
+        <strong>103</strong> unsupported &nbsp;·&nbsp;
+        <strong>104</strong> disk full &nbsp;·&nbsp;
+        <strong>105</strong> no disk &nbsp;·&nbsp;
+        <strong>106</strong> disk error &nbsp;·&nbsp;
+        <strong>107</strong> timeline empty &nbsp;·&nbsp;
+        <strong>108</strong> internal error &nbsp;·&nbsp;
+        <strong>109</strong> out of range &nbsp;·&nbsp;
+        <strong>110</strong> no input &nbsp;·&nbsp;
+        <strong>111</strong> remote control disabled &nbsp;·&nbsp;
+        <strong>112</strong> clip not found &nbsp;·&nbsp;
+        <strong>120</strong> connection failed &nbsp;·&nbsp;
+        <strong>121</strong> authentication failed &nbsp;·&nbsp;
+        <strong>122</strong> authentication required &nbsp;·&nbsp;
+        <strong>150</strong> invalid state &nbsp;·&nbsp;
+        <strong>151</strong> invalid codec &nbsp;·&nbsp;
+        <strong>160</strong> invalid format &nbsp;·&nbsp;
+        <strong>161</strong> invalid token &nbsp;·&nbsp;
+        <strong>162</strong> format not prepared &nbsp;·&nbsp;
+        <strong>163</strong> parameterized single line command not supported
+      </div>
+    </div>
+
+  </div><!-- /tab-dashboard -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       TRANSPORT  – play, stop, record, jog, shuttle, goto,
+                    playrange, play on startup, play option, preview
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-transport">
+
+    <!-- Play -->
+    <div class="card">
+      <h2 class="card__title">Playback</h2>
+      <div class="transport-btns">
+        <button class="tbtn" onclick="sendCmd('goto: timeline: start')" title="Go to timeline start">⏮</button>
+        <button class="tbtn" onclick="sendCmd('goto: clip id: -1')" title="Previous clip">⏪</button>
+        <button class="tbtn tbtn--stop"   onclick="sendCmd('stop')"   title="Stop">⏹</button>
+        <button class="tbtn tbtn--play"   onclick="applyPlay()"       title="Play">⏵</button>
+        <button class="tbtn tbtn--record" onclick="applyRecord()"     title="Record">⏺</button>
+        <button class="tbtn" onclick="sendCmd('goto: clip id: +1')"   title="Next clip">⏩</button>
+        <button class="tbtn" onclick="sendCmd('goto: timeline: end')" title="Go to timeline end">⏭</button>
       </div>
 
-      <div class="card">
-        <h2 class="card__title">Play Range</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="prClipId">Clip ID</label>
-            <input id="prClipId" type="number" min="1" placeholder="optional" />
-          </div>
-          <div class="field-row">
-            <label for="prCount">Count</label>
-            <input id="prCount" type="number" min="1" placeholder="optional" />
-          </div>
-          <div class="field-row">
-            <label for="prIn">In Timecode</label>
-            <input id="prIn" type="text" placeholder="00:00:00:00" class="mono" />
-          </div>
-          <div class="field-row">
-            <label for="prOut">Out Timecode</label>
-            <input id="prOut" type="text" placeholder="00:00:00:00" class="mono" />
-          </div>
-          <div class="field-row">
-            <label for="prTlIn">Timeline In (frames)</label>
-            <input id="prTlIn" type="number" min="0" placeholder="optional" />
-          </div>
-          <div class="field-row">
-            <label for="prTlOut">Timeline Out (frames)</label>
-            <input id="prTlOut" type="number" min="0" placeholder="optional" />
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--primary" onclick="applyPlayrange()">Set Range</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('playrange')">↻ Query</button>
-          <button class="btn btn--danger btn--sm" onclick="sendCmd('playrange clear')">Clear</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Play on Startup</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="posEnable">Enable</label>
-            <label class="toggle"><input type="checkbox" id="posEnable" /><span class="slider"></span></label>
-          </div>
-          <div class="field-row">
-            <label for="posSingleClip">Single Clip</label>
-            <label class="toggle"><input type="checkbox" id="posSingleClip" /><span class="slider"></span></label>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--secondary btn--sm" onclick="applyPlayOnStartup()">Apply</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('play on startup')">↻ Query</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Play Option</h2>
+      <div class="field-grid">
         <div class="field-row">
-          <label for="stopMode">Stop Mode</label>
-          <select id="stopMode">
-            <option value="lastframe">lastframe</option>
-            <option value="nextframe">nextframe</option>
-            <option value="black">black</option>
+          <label for="playSpeed">Speed (%)</label>
+          <input id="playSpeed" type="number" value="100" min="-5000" max="5000"
+                 title="Play speed: -5000 to 5000. 100 = normal." />
+        </div>
+        <div class="field-row">
+          <label for="playClipId">Clip ID</label>
+          <input id="playClipId" type="number" min="1" placeholder="optional"
+                 title="Start play from this clip ID" />
+        </div>
+        <div class="field-row">
+          <label for="playLoop">Loop</label>
+          <label class="toggle"><input type="checkbox" id="playLoop" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="playSingleClip">Single Clip</label>
+          <label class="toggle"><input type="checkbox" id="playSingleClip" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row span-2">
+          <label for="playTimecodeOffset">TC Offset</label>
+          <input id="playTimecodeOffset" type="text" placeholder="+00:00:00:00 (with clip id)" class="mono"
+                 title="Optional timecode offset from the start of the chosen clip" />
+        </div>
+      </div>
+      <button class="btn btn--primary" onclick="applyPlay()">▶ Play</button>
+    </div>
+
+    <!-- Stop -->
+    <div class="card">
+      <h2 class="card__title">Stop</h2>
+      <p class="hint">Stops the current playback or recording. Switch to preview/output mode first if needed.</p>
+      <button class="btn btn--danger" onclick="sendCmd('stop')">⏹ Stop</button>
+    </div>
+
+    <!-- Jog -->
+    <div class="card">
+      <h2 class="card__title">Jog</h2>
+      <p class="hint">Frame-accurate positioning. Supports absolute or relative ±timecode.</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="jogTimecode">Timecode</label>
+          <input id="jogTimecode" type="text" placeholder="±00:00:00:00" class="mono" />
+        </div>
+      </div>
+      <button class="btn btn--primary" onclick="applyJog()">Jog</button>
+    </div>
+
+    <!-- Shuttle -->
+    <div class="card">
+      <h2 class="card__title">Shuttle</h2>
+      <p class="hint">Continuously variable speed from -5000 to 5000%. 0 = pause.</p>
+      <div class="field-row">
+        <label for="shuttleSpeed">Speed (%)</label>
+        <input id="shuttleSpeed" type="number" value="0" min="-5000" max="5000" step="100" />
+      </div>
+      <div class="btn-row" style="margin-bottom:var(--sp-sm)">
+        <button class="btn btn--primary btn--sm" onclick="applyShuttle()">Shuttle</button>
+      </div>
+      <!-- Speed presets -->
+      <div class="shuttle-presets">
+        <button class="btn btn--sm" onclick="applyShuttlePreset(-5000)">◀◀ MAX</button>
+        <button class="btn btn--sm" onclick="applyShuttlePreset(-1600)">◀◀ ×16</button>
+        <button class="btn btn--sm" onclick="applyShuttlePreset(-400)">◀◀ ×4</button>
+        <button class="btn btn--sm" onclick="applyShuttlePreset(-100)">◀ ×1</button>
+        <button class="btn btn--sm" onclick="applyShuttlePreset(0)">■ 0</button>
+        <button class="btn btn--sm" onclick="applyShuttlePreset(100)">▶ ×1</button>
+        <button class="btn btn--sm" onclick="applyShuttlePreset(400)">▶▶ ×4</button>
+        <button class="btn btn--sm" onclick="applyShuttlePreset(1600)">▶▶ ×16</button>
+        <button class="btn btn--sm" onclick="applyShuttlePreset(5000)">▶▶ MAX</button>
+      </div>
+    </div>
+
+    <!-- Go To -->
+    <div class="card">
+      <h2 class="card__title">Go To</h2>
+      <p class="hint">Spec: only one parameter/value pair per goto command. Use ± prefix for relative navigation.</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="gotoParam">Navigate by</label>
+          <select id="gotoParam" onchange="updateGotoHint()">
+            <option value="clip id">Clip ID</option>
+            <option value="clip">Clip position</option>
+            <option value="timeline">Timeline position</option>
+            <option value="timecode">Timecode</option>
+            <option value="slot id">Slot ID</option>
           </select>
         </div>
-        <div class="btn-row">
-          <button class="btn btn--secondary btn--sm" onclick="applyPlayOption()">Apply</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('play option')">↻ Query</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Preview</h2>
         <div class="field-row">
-          <label for="previewEnable">Enable Preview</label>
-          <label class="toggle"><input type="checkbox" id="previewEnable" /><span class="slider"></span></label>
-        </div>
-        <button class="btn btn--secondary btn--sm" onclick="applyPreview()">Apply</button>
-      </div>
-
-    </div><!-- /tab-transport -->
-
-    <!-- ==================== CLIPS ==================== -->
-    <div class="tab-panel" id="tab-clips">
-
-      <div class="card">
-        <div class="card__title-row">
-          <h2 class="card__title">Clips Get <span class="badge" id="clipCountBadge"></span></h2>
-          <div class="btn-row" style="margin:0">
-            <button class="btn btn--secondary btn--sm" onclick="sendCmd('clips count')">Count</button>
-            <button class="btn btn--secondary btn--sm" onclick="sendCmd('clips rebuild')">Rebuild</button>
-          </div>
-        </div>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="clipsGetVersion">Version</label>
-            <select id="clipsGetVersion">
-              <option value="">default (1)</option>
-              <option value="1">1 – id name startTC duration</option>
-              <option value="2">2 – id clipInTC dur inTC outTC filename</option>
-              <option value="3">3 – id clipInTC dur inTC outTC folder/filename</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="clipsGetId">Start Clip ID</label>
-            <input id="clipsGetId" type="number" min="1" placeholder="optional" />
-          </div>
-          <div class="field-row">
-            <label for="clipsGetCount">Count</label>
-            <input id="clipsGetCount" type="number" min="1" placeholder="optional" />
-          </div>
-        </div>
-        <button class="btn btn--primary" onclick="applyClipsGet()">Get Clips</button>
-        <div id="clipTable" class="clip-table" style="margin-top:.75rem">
-          <p class="hint">Click "Get Clips" to load timeline clips.</p>
+          <label for="gotoValue">Value</label>
+          <input id="gotoValue" type="text" placeholder="e.g. 3, +1, start, end, 00:01:00:00" class="mono" />
         </div>
       </div>
+      <p class="hint" id="gotoHint">
+        Clip ID: absolute ID, +n or -n for relative (clamped to first/last clip).
+      </p>
+      <button class="btn btn--primary" onclick="applyGoto()">Go To</button>
+    </div>
 
-      <div class="card">
-        <h2 class="card__title">Clip Info</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="clipInfoId">Clip ID</label>
-            <input id="clipInfoId" type="number" min="1" placeholder="current if blank" />
-          </div>
-          <div class="field-row">
-            <label for="clipInfoName">Clip Name</label>
-            <input id="clipInfoName" type="text" placeholder="optional" />
-          </div>
-        </div>
-        <button class="btn btn--secondary btn--sm" onclick="applyClipInfo()">Query Clip Info</button>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Add Clip to Timeline</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="clipAddName">Clip Name / Path</label>
-            <input id="clipAddName" type="text" placeholder="folder/HyperDeck_0001.mp4" />
-          </div>
-          <div class="field-row">
-            <label for="clipAddBeforeId">Insert Before Clip ID</label>
-            <input id="clipAddBeforeId" type="number" min="1" placeholder="optional – append if blank" />
-          </div>
-          <div class="field-row">
-            <label for="clipAddInTC">In Timecode</label>
-            <input id="clipAddInTC" type="text" placeholder="optional" class="mono" />
-          </div>
-          <div class="field-row">
-            <label for="clipAddOutTC">Out Timecode</label>
-            <input id="clipAddOutTC" type="text" placeholder="optional" class="mono" />
-          </div>
-          <div class="field-row">
-            <label for="clipAddFrameIn">Frame In</label>
-            <input id="clipAddFrameIn" type="number" min="0" placeholder="optional" />
-          </div>
-          <div class="field-row">
-            <label for="clipAddFrameOut">Frame Out</label>
-            <input id="clipAddFrameOut" type="number" min="0" placeholder="optional" />
-          </div>
-        </div>
-        <button class="btn btn--primary" onclick="applyClipAdd()">Add Clip</button>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Remove / Clear Clips</h2>
+    <!-- Playrange -->
+    <div class="card">
+      <h2 class="card__title">Play Range</h2>
+      <p class="hint">Choose exactly one method: Clip ID, Timecode range, or Timeline frames.</p>
+      <div class="field-grid">
         <div class="field-row">
-          <label for="clipRemoveId">Remove Clip ID</label>
-          <input id="clipRemoveId" type="number" min="1" placeholder="1" />
+          <label for="prClipId">Clip ID</label>
+          <input id="prClipId" type="number" min="1" placeholder="optional" />
         </div>
-        <div class="btn-row">
-          <button class="btn btn--danger" onclick="applyClipRemove()">Remove Clip</button>
-          <button class="btn btn--danger btn--sm" onclick="confirmClearClips()">Clear All</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Record</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="recordName">Clip Name (optional)</label>
-            <input id="recordName" type="text" placeholder="MyRecording" />
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--record btn--primary" onclick="applyRecord()">⏺ Record</button>
-          <button class="btn btn--stop" onclick="sendCmd('stop')">⏹ Stop</button>
-        </div>
-        <div class="field-grid" style="margin-top:.75rem">
-          <div class="field-row">
-            <label for="recordSpillSlot">Spill to Slot ID</label>
-            <input id="recordSpillSlot" type="number" min="1" placeholder="optional" />
-          </div>
-        </div>
-        <button class="btn btn--secondary btn--sm" onclick="applyRecordSpill()">Spill Recording</button>
-        <button class="btn btn--secondary btn--sm" onclick="sendCmd('record spill')" style="margin-left:.4rem">Query Spill Order</button>
-      </div>
-
-    </div><!-- /tab-clips -->
-
-    <!-- ==================== SLOTS / DISK ==================== -->
-    <div class="tab-panel" id="tab-slots">
-
-      <div class="card">
-        <h2 class="card__title">Slot Info</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="slotInfoId">Slot ID</label>
-            <input id="slotInfoId" type="number" min="1" placeholder="active slot if blank" />
-          </div>
-          <div class="field-row">
-            <label for="slotInfoDevice">Device</label>
-            <input id="slotInfoDevice" type="text" placeholder="optional device name" />
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--primary" onclick="applySlotInfo()">Query</button>
-        </div>
-        <div id="slotInfoResult" class="result-box" hidden></div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Slot Select</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="slotSelectId">Slot ID</label>
-            <input id="slotSelectId" type="number" min="1" placeholder="optional" />
-          </div>
-          <div class="field-row">
-            <label for="slotSelectDevice">Device</label>
-            <input id="slotSelectDevice" type="text" placeholder="optional device name" />
-          </div>
-          <div class="field-row">
-            <label for="slotSelectFormat">Video Format</label>
-            <input id="slotSelectFormat" type="text" placeholder="e.g. 1080p25 (optional)" />
-          </div>
-        </div>
-        <button class="btn btn--primary" onclick="applySlotSelect()">Select</button>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Slot Unblock</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="slotUnblockId">Slot ID</label>
-            <input id="slotUnblockId" type="number" min="1" placeholder="active slot if blank" />
-          </div>
-          <div class="field-row">
-            <label for="slotUnblockDevice">Device</label>
-            <input id="slotUnblockDevice" type="text" placeholder="optional" />
-          </div>
-        </div>
-        <button class="btn btn--secondary" onclick="applySlotUnblock()">Unblock</button>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Disk List</h2>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="diskListSlot">Slot ID</label>
-            <input id="diskListSlot" type="number" min="1" placeholder="active slot if blank" />
-          </div>
-          <div class="field-row">
-            <label for="diskListDevice">Device</label>
-            <input id="diskListDevice" type="text" placeholder="optional" />
-          </div>
-        </div>
-        <button class="btn btn--primary" onclick="applyDiskList()">List Disk</button>
-        <div id="diskListResult" class="result-box" hidden></div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">External Drives</h2>
-        <div class="btn-row">
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('external drive list')">List Drives</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('external drive selected')">Query Selected</button>
-        </div>
-        <div class="field-row" style="margin-top:.75rem">
-          <label for="extDriveSelect">Select Device</label>
-          <input id="extDriveSelect" type="text" placeholder="device name" />
-        </div>
-        <button class="btn btn--secondary btn--sm" onclick="applyExtDriveSelect()">Select Drive</button>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Format Disk</h2>
-        <p class="warning">⚠ This will erase all data. Cannot be undone.</p>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="fmtSlotId">Slot ID</label>
-            <input id="fmtSlotId" type="number" min="1" placeholder="active slot if blank" />
-          </div>
-          <div class="field-row">
-            <label for="fmtDevice">Device</label>
-            <input id="fmtDevice" type="text" placeholder="optional" />
-          </div>
-          <div class="field-row">
-            <label for="fmtFs">Filesystem</label>
-            <select id="fmtFs">
-              <option value="exFAT">exFAT</option>
-              <option value="HFS+">HFS+</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="fmtName">Volume Name</label>
-            <input id="fmtName" type="text" placeholder="optional" />
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--danger" onclick="applyFormatPrepare()">Prepare Format</button>
-          <button class="btn btn--danger" id="btnFormatConfirm" onclick="applyFormatConfirm()" disabled>✓ Confirm Format</button>
-        </div>
-        <div class="field-row" style="margin-top:.5rem">
-          <label for="fmtToken">Token (from device)</label>
-          <input id="fmtToken" type="text" class="mono" placeholder="auto-filled or paste here" />
-        </div>
-        <p class="hint" id="formatHint">After "Prepare", paste the token returned by the device, then click Confirm.</p>
-      </div>
-
-    </div><!-- /tab-slots -->
-
-    <!-- ==================== CONFIGURATION ==================== -->
-    <div class="tab-panel" id="tab-config">
-
-      <div class="card">
-        <div class="card__title-row">
-          <h2 class="card__title">Device Configuration</h2>
-          <button class="btn btn--sm btn--secondary" onclick="sendCmd('configuration')">↻ Load</button>
-        </div>
-
-        <h3 class="section-heading">Video &amp; Audio</h3>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="cfgVideoInput">Video Input</label>
-            <select id="cfgVideoInput">
-              <option value="">— unchanged —</option>
-              <option>SDI</option><option>4xSDI</option><option>HDMI</option>
-              <option>component</option><option>composite</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="cfgAudioInput">Audio Input</label>
-            <select id="cfgAudioInput">
-              <option value="">— unchanged —</option>
-              <option>embedded</option><option>XLR</option><option>RCA</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="cfgAudioCodec">Audio Codec</label>
-            <select id="cfgAudioCodec">
-              <option value="">— unchanged —</option>
-              <option>PCM</option><option>AAC</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="cfgAudioChannels">Audio Channels</label>
-            <input id="cfgAudioChannels" type="number" min="2" max="16" step="2" placeholder="unchanged" />
-          </div>
-          <div class="field-row">
-            <label for="cfgXlrMapping">XLR Mapping</label>
-            <input id="cfgXlrMapping" type="text" placeholder="none or start channel n" />
-          </div>
-          <div class="field-row">
-            <label for="cfgRcaMapping">RCA Mapping</label>
-            <input id="cfgRcaMapping" type="text" placeholder="none or start channel n" />
-          </div>
-          <div class="field-row" style="grid-column:span 2">
-            <label for="cfgXlrInputDef">XLR Input Config</label>
-            <input id="cfgXlrInputDef" type="text" placeholder='e.g. xlr input id: 1 xlr type: mic' class="mono" />
-          </div>
-        </div>
-
-        <h3 class="section-heading">File Format</h3>
-        <div class="field-grid">
-          <div class="field-row" style="grid-column:span 2">
-            <label for="cfgFileFormat">File Format</label>
-            <select id="cfgFileFormat">
-              <option value="">— unchanged —</option>
-              <option>H.264High_SDI</option><option>H.264High</option>
-              <option>H.264Medium</option><option>H.264Low</option>
-              <option>H.264High10_422</option>
-              <option>H.265High_SDI</option><option>H.265High</option>
-              <option>H.265Medium</option><option>H.265Low</option>
-              <option>QuickTimeProResHQ</option><option>QuickTimeProRes</option>
-              <option>QuickTimeProResLT</option><option>QuickTimeProResProxy</option>
-              <option>QuickTimeDNxHR_HQX</option><option>DNxHR_HQX</option>
-              <option>QuickTimeDNxHR_SQ</option><option>DNxHR_SQ</option>
-              <option>QuickTimeDNxHR_LB</option><option>DNxHR_LB</option>
-              <option>QuickTimeDNxHD220x</option><option>DNxHD220x</option>
-              <option>QuickTimeDNxHD145</option><option>DNxHD145</option>
-              <option>QuickTimeDNxHD45</option><option>DNxHD45</option>
-            </select>
-          </div>
-        </div>
-
-        <h3 class="section-heading">Timecode</h3>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="cfgTimecodeInput">TC Input</label>
-            <select id="cfgTimecodeInput">
-              <option value="">— unchanged —</option>
-              <option>external</option><option>embedded</option>
-              <option>internal</option><option>preset</option><option>clip</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="cfgTimecodeOutput">TC Output</label>
-            <select id="cfgTimecodeOutput">
-              <option value="">— unchanged —</option>
-              <option>clip</option><option>timeline</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="cfgTimecodePreference">TC Preference</label>
-            <select id="cfgTimecodePreference">
-              <option value="">— unchanged —</option>
-              <option>default</option><option>dropframe</option><option>nondropframe</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="cfgTimecodePreset">TC Preset</label>
-            <input id="cfgTimecodePreset" type="text" placeholder="00:00:00:00" class="mono" />
-          </div>
-        </div>
-
-        <h3 class="section-heading">Recording</h3>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="cfgRecordTrigger">Record Trigger</label>
-            <select id="cfgRecordTrigger">
-              <option value="">— unchanged —</option>
-              <option>none</option><option>recordbit</option><option>timecoderun</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="cfgRecordPrefix">Record Prefix</label>
-            <input id="cfgRecordPrefix" type="text" placeholder="e.g. Clip" />
-          </div>
-          <div class="field-row">
-            <label for="cfgRecordCache">Record Cache</label>
-            <label class="toggle"><input type="checkbox" id="cfgRecordCache" /><span class="slider"></span></label>
-          </div>
-          <div class="field-row">
-            <label for="cfgAppendTimestamp">Append Timestamp</label>
-            <label class="toggle"><input type="checkbox" id="cfgAppendTimestamp" /><span class="slider"></span></label>
-          </div>
-          <div class="field-row">
-            <label for="cfgUsbSpill">USB Spill</label>
-            <label class="toggle"><input type="checkbox" id="cfgUsbSpill" /><span class="slider"></span></label>
-          </div>
-        </div>
-
-        <h3 class="section-heading">Reference &amp; Sync</h3>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="cfgRefSource">Reference Source</label>
-            <select id="cfgRefSource">
-              <option value="">— unchanged —</option>
-              <option>auto</option><option>input</option><option>external</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="cfgGenlockResync">Genlock Resync</label>
-            <label class="toggle"><input type="checkbox" id="cfgGenlockResync" /><span class="slider"></span></label>
-          </div>
-          <div class="field-row">
-            <label for="cfgDefaultStandard">Default Standard</label>
-            <input id="cfgDefaultStandard" type="text" placeholder="e.g. 1080p25" />
-          </div>
-        </div>
-
-        <button class="btn btn--primary" style="margin-top:.75rem" onclick="applyConfig()">Apply Configuration</button>
-      </div>
-
-      <!-- Connection Protocol -->
-      <div class="card">
-        <h2 class="card__title">Connection Protocol</h2>
         <div class="field-row">
-          <label for="connProtoVersion">Response Version</label>
-          <select id="connProtoVersion">
-            <option value="1">1 – classic (id name startTC duration)</option>
-            <option value="2">2 – extended (id clipInTC dur inTC outTC folder/filename)</option>
+          <label for="prCount">Count</label>
+          <input id="prCount" type="number" min="1" placeholder="optional" />
+        </div>
+        <div class="field-row">
+          <label for="prIn">In TC</label>
+          <input id="prIn" type="text" placeholder="00:00:00:00" class="mono" />
+        </div>
+        <div class="field-row">
+          <label for="prOut">Out TC</label>
+          <input id="prOut" type="text" placeholder="00:00:00:00" class="mono" />
+        </div>
+        <div class="field-row">
+          <label for="prTlIn">Timeline In (frames)</label>
+          <input id="prTlIn" type="number" min="0" placeholder="optional" />
+        </div>
+        <div class="field-row">
+          <label for="prTlOut">Timeline Out (frames)</label>
+          <input id="prTlOut" type="number" min="0" placeholder="optional" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary" onclick="applyPlayrangeSet()">Set Range</button>
+        <button class="btn btn--sm" onclick="sendCmd('playrange')">↻ Query</button>
+        <button class="btn btn--sm btn--danger" onclick="sendCmd('playrange clear')">Clear</button>
+      </div>
+    </div>
+
+    <!-- Play on Startup -->
+    <div class="card">
+      <h2 class="card__title">Play on Startup</h2>
+      <p class="hint">Determines deck behaviour on power-up.</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="posEnable">Enable</label>
+          <label class="toggle"><input type="checkbox" id="posEnable" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="posSingleClip">Single Clip</label>
+          <label class="toggle"><input type="checkbox" id="posSingleClip" /><span class="slider"></span></label>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applyPlayOnStartup()">Apply</button>
+        <button class="btn btn--sm" onclick="sendCmd('play on startup')">↻ Query</button>
+      </div>
+    </div>
+
+    <!-- Play Option -->
+    <div class="card">
+      <h2 class="card__title">Play Option</h2>
+      <p class="hint">Determines which frame is displayed when playback stops.</p>
+      <div class="field-row">
+        <label for="stopMode">Stop Mode</label>
+        <select id="stopMode">
+          <option value="lastframe">lastframe  (default)</option>
+          <option value="nextframe">nextframe</option>
+          <option value="black">black</option>
+        </select>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applyPlayOption()">Apply</button>
+        <button class="btn btn--sm" onclick="sendCmd('play option')">↻ Query</button>
+      </div>
+    </div>
+
+    <!-- Preview -->
+    <div class="card">
+      <h2 class="card__title">Preview Mode</h2>
+      <p class="hint">Switches between preview (input) and output mode.
+        Stop recording before switching to output.</p>
+      <div class="field-row">
+        <label for="previewEnable">Enable Preview</label>
+        <label class="toggle"><input type="checkbox" id="previewEnable" /><span class="slider"></span></label>
+      </div>
+      <button class="btn btn--primary btn--sm" onclick="applyPreview()">Apply</button>
+    </div>
+
+  </div><!-- /tab-transport -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       CLIPS  – timeline management, record, clip info
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-clips">
+
+    <!-- Clips Get / browser -->
+    <div class="card" style="grid-column:1/-1">
+      <div class="card__title-row">
+        <h2 class="card__title">Timeline Clips
+          <span class="badge" id="clipCountBadge" style="display:none"></span>
+        </h2>
+        <div class="btn-row">
+          <button class="btn btn--sm" onclick="sendCmd('clips count')">Count</button>
+          <button class="btn btn--sm" onclick="sendCmd('clips rebuild')">Rebuild</button>
+          <button class="btn btn--sm btn--danger" onclick="confirmClipsClear()">Clear All</button>
+        </div>
+      </div>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="clipsGetVersion">Response Version</label>
+          <select id="clipsGetVersion" title="Protocol version 1,2,3 – controls field set returned">
+            <option value="">default (1)</option>
+            <option value="2">2 – includes in/out points</option>
+            <option value="3">3 – includes folder paths</option>
           </select>
         </div>
-        <button class="btn btn--secondary btn--sm" onclick="applyConnProto()">Apply</button>
-      </div>
-
-      <!-- Device Info -->
-      <div class="card">
-        <h2 class="card__title">Device Info</h2>
-        <button class="btn btn--secondary btn--sm" onclick="sendCmd('device info')">Query</button>
-        <div id="deviceInfoResult" class="result-box" hidden></div>
-      </div>
-
-      <!-- Uptime -->
-      <div class="card">
-        <h2 class="card__title">Uptime</h2>
-        <button class="btn btn--secondary btn--sm" onclick="sendCmd('uptime')">Query</button>
-        <div id="uptimeResult" class="result-box" hidden></div>
-      </div>
-
-      <!-- Authenticate -->
-      <div class="card">
-        <h2 class="card__title">Authenticate</h2>
-        <p class="hint">For HyperDecks with secure access enabled.</p>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="authUser">Username</label>
-            <input id="authUser" type="text" placeholder="username" />
-          </div>
-          <div class="field-row">
-            <label for="authPass">Password</label>
-            <input id="authPass" type="password" placeholder="password" />
-          </div>
-        </div>
-        <button class="btn btn--primary" onclick="applyAuthenticate()">Authenticate</button>
-      </div>
-
-    </div><!-- /tab-config -->
-
-    <!-- ==================== NOTIFICATIONS ==================== -->
-    <div class="tab-panel" id="tab-notify">
-      <div class="card">
-        <h2 class="card__title">Notification Subscriptions</h2>
-        <p class="hint">The server sends asynchronous (5xx) messages for enabled events.</p>
-        <div class="field-grid">
-          <div class="field-row"><label for="notRemote">remote</label>
-            <label class="toggle"><input type="checkbox" id="notRemote" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notTransport">transport</label>
-            <label class="toggle"><input type="checkbox" id="notTransport" checked /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notSlot">slot</label>
-            <label class="toggle"><input type="checkbox" id="notSlot" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notConfiguration">configuration</label>
-            <label class="toggle"><input type="checkbox" id="notConfiguration" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notDroppedFrames">dropped frames</label>
-            <label class="toggle"><input type="checkbox" id="notDroppedFrames" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notDisplayTimecode">display timecode</label>
-            <label class="toggle"><input type="checkbox" id="notDisplayTimecode" checked /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notTimelinePosition">timeline position</label>
-            <label class="toggle"><input type="checkbox" id="notTimelinePosition" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notPlayrange">playrange</label>
-            <label class="toggle"><input type="checkbox" id="notPlayrange" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notCache">cache</label>
-            <label class="toggle"><input type="checkbox" id="notCache" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notDynamicRange">dynamic range</label>
-            <label class="toggle"><input type="checkbox" id="notDynamicRange" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notSlate">slate</label>
-            <label class="toggle"><input type="checkbox" id="notSlate" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notClips">clips</label>
-            <label class="toggle"><input type="checkbox" id="notClips" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notDisk">disk</label>
-            <label class="toggle"><input type="checkbox" id="notDisk" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notDeviceInfo">device info</label>
-            <label class="toggle"><input type="checkbox" id="notDeviceInfo" /><span class="slider"></span></label></div>
-          <div class="field-row"><label for="notNas">nas</label>
-            <label class="toggle"><input type="checkbox" id="notNas" /><span class="slider"></span></label></div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--primary" onclick="applyNotify()">Apply Notifications</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('notify')">↻ Query</button>
-        </div>
-      </div>
-    </div><!-- /tab-notify -->
-
-    <!-- ==================== DYNAMIC RANGE ==================== -->
-    <div class="tab-panel" id="tab-dynrange">
-      <div class="card">
-        <h2 class="card__title">Dynamic Range</h2>
-        <p class="hint">Controls HDR/SDR conversion for playback and recording.</p>
-        <div class="field-grid">
-          <div class="field-row">
-            <label for="drPlayback">Playback Override</label>
-            <select id="drPlayback">
-              <option value="">— unchanged —</option>
-              <option>off</option><option>Rec709</option><option>Rec2020_SDR</option>
-              <option>HLG</option><option>ST2084_300</option><option>ST2084_500</option>
-              <option>ST2084_800</option><option>ST2084_1000</option>
-              <option>ST2084_2000</option><option>ST2084_4000</option><option>ST2084</option>
-            </select>
-          </div>
-          <div class="field-row">
-            <label for="drRecord">Record Override</label>
-            <select id="drRecord">
-              <option value="">— unchanged —</option>
-              <option>off</option><option>Rec709</option><option>Rec2020_SDR</option>
-              <option>HLG</option><option>ST2084_300</option><option>ST2084_500</option>
-              <option>ST2084_800</option><option>ST2084_1000</option>
-              <option>ST2084_2000</option><option>ST2084_4000</option><option>ST2048</option>
-            </select>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--primary" onclick="applyDynamicRange()">Apply</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('dynamic range')">↻ Query</button>
-        </div>
-      </div>
-    </div><!-- /tab-dynrange -->
-
-    <!-- ==================== SLATE ==================== -->
-    <div class="tab-panel" id="tab-slate">
-
-      <div class="card">
-        <h2 class="card__title">Slate Clips</h2>
-        <div class="field-grid">
-          <div class="field-row"><label for="slatReel">Reel</label>
-            <input id="slatReel" type="number" min="1" max="999" placeholder="1–999" /></div>
-          <div class="field-row"><label for="slatSceneId">Scene ID</label>
-            <input id="slatSceneId" type="text" placeholder="e.g. 42A" /></div>
-          <div class="field-row"><label for="slatShotType">Shot Type</label>
-            <select id="slatShotType">
-              <option value="">— unchanged —</option>
-              <option>WS</option><option>MS</option><option>CU</option>
-              <option>BCU</option><option>MCU</option><option>ECU</option><option>none</option>
-            </select></div>
-          <div class="field-row"><label for="slatTake">Take</label>
-            <input id="slatTake" type="number" min="1" max="99" placeholder="1–99" /></div>
-          <div class="field-row"><label for="slatTakeScenario">Take Scenario</label>
-            <select id="slatTakeScenario">
-              <option value="">— unchanged —</option>
-              <option>PU</option><option>VFX</option><option>SER</option><option>none</option>
-            </select></div>
-          <div class="field-row"><label for="slatTakeAutoInc">Take Auto Inc</label>
-            <select id="slatTakeAutoInc">
-              <option value="">— unchanged —</option>
-              <option value="true">true</option><option value="false">false</option>
-            </select></div>
-          <div class="field-row"><label for="slatGoodTake">Good Take</label>
-            <select id="slatGoodTake">
-              <option value="">— unchanged —</option>
-              <option value="true">true</option><option value="false">false</option>
-            </select></div>
-          <div class="field-row"><label for="slatEnvironment">Environment</label>
-            <select id="slatEnvironment">
-              <option value="">— unchanged —</option>
-              <option>interior</option><option>exterior</option>
-            </select></div>
-          <div class="field-row"><label for="slatDayNight">Day / Night</label>
-            <select id="slatDayNight">
-              <option value="">— unchanged —</option>
-              <option>day</option><option>night</option>
-            </select></div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--primary" onclick="applySlateClips()">Set Slate Clips</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('slate clips')">↻ Query</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Slate Project</h2>
-        <div class="field-grid">
-          <div class="field-row"><label for="slatProjName">Project Name</label>
-            <input id="slatProjName" type="text" placeholder="supports UTF-8" /></div>
-          <div class="field-row"><label for="slatCamera">Camera</label>
-            <input id="slatCamera" type="text" placeholder="e.g. A" /></div>
-          <div class="field-row"><label for="slatDirector">Director</label>
-            <input id="slatDirector" type="text" placeholder="supports UTF-8" /></div>
-          <div class="field-row"><label for="slatCamOp">Camera Operator</label>
-            <input id="slatCamOp" type="text" placeholder="supports UTF-8" /></div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--primary" onclick="applySlateProject()">Set Slate Project</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('slate project')">↻ Query</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Slate Lens</h2>
-        <div class="field-grid">
-          <div class="field-row"><label for="slatLensType">Lens Type</label>
-            <input id="slatLensType" type="text" placeholder="supports UTF-8" /></div>
-          <div class="field-row"><label for="slatIris">Iris</label>
-            <input id="slatIris" type="text" placeholder="supports UTF-8" /></div>
-          <div class="field-row"><label for="slatFocalLength">Focal Length</label>
-            <input id="slatFocalLength" type="text" placeholder="supports UTF-8" /></div>
-          <div class="field-row"><label for="slatDistance">Distance</label>
-            <input id="slatDistance" type="text" placeholder="supports UTF-8" /></div>
-          <div class="field-row"><label for="slatFilter">Filter</label>
-            <input id="slatFilter" type="text" placeholder="supports UTF-8" /></div>
-        </div>
-        <div class="btn-row">
-          <button class="btn btn--primary" onclick="applySlateLens()">Set Slate Lens</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('slate lens')">↻ Query</button>
-        </div>
-      </div>
-
-    </div><!-- /tab-slate -->
-
-    <!-- ==================== NAS ==================== -->
-    <div class="tab-panel" id="tab-nas">
-
-      <div class="card">
-        <h2 class="card__title">NAS Discovery</h2>
-        <div class="btn-row">
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('nas discovered')">Discover NAS</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('nas list')">List Bookmarks</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('nas selected')">Query Selected</button>
-          <button class="btn btn--danger btn--sm" onclick="sendCmd('nas deselect')">Deselect / Unmount</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Add NAS Bookmark</h2>
-        <p class="hint">e.g. smb://CloudStore80.local/Studio1</p>
-        <div class="field-grid">
-          <div class="field-row"><label for="nasAddUrl">URL</label>
-            <input id="nasAddUrl" type="text" placeholder="smb://server.local/share" /></div>
-          <div class="field-row"><label for="nasAddUser">Username</label>
-            <input id="nasAddUser" type="text" placeholder="optional (guest if blank)" /></div>
-          <div class="field-row"><label for="nasAddPass">Password</label>
-            <input id="nasAddPass" type="password" placeholder="optional" /></div>
-        </div>
-        <button class="btn btn--primary" onclick="applyNasAdd()">Add NAS</button>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Remove NAS Bookmark</h2>
-        <div class="field-row"><label for="nasRemoveUrl">URL</label>
-          <input id="nasRemoveUrl" type="text" placeholder="smb://server.local/share" /></div>
-        <button class="btn btn--danger btn--sm" onclick="applyNasRemove()">Remove</button>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Mount NAS Share</h2>
-        <div class="field-row"><label for="nasSelectUrl">URL</label>
-          <input id="nasSelectUrl" type="text" placeholder="smb://server.local/share" /></div>
-        <button class="btn btn--primary" onclick="applyNasSelect()">Mount</button>
-        <p class="hint">Use "slot info: device: network" or enable slot notifications to confirm mount.</p>
-      </div>
-
-    </div><!-- /tab-nas -->
-
-    <!-- ==================== ADVANCED ==================== -->
-    <div class="tab-panel" id="tab-advanced">
-
-      <div class="card">
-        <h2 class="card__title">Device Commands</h2>
-        <div class="btn-row">
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('ping')">Ping</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('help')">Help</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('commands')">Commands (XML)</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('uptime')">Uptime</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('cache info')">Cache Info</button>
-        </div>
-        <div class="btn-row" style="margin-top:.4rem">
-          <button class="btn btn--danger btn--sm" onclick="confirmReboot()">⚠ Reboot Device</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('quit')">Quit / Disconnect</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2 class="card__title">Identify Device</h2>
-        <p class="hint">Flash the front panel LEDs to identify the unit.</p>
         <div class="field-row">
-          <label for="identifyEnable">Enable Flash</label>
-          <label class="toggle"><input type="checkbox" id="identifyEnable" checked /><span class="slider"></span></label>
+          <label for="clipsGetClipId">Start Clip ID</label>
+          <input id="clipsGetClipId" type="number" min="1" placeholder="optional – all if blank" />
         </div>
-        <button class="btn btn--secondary" onclick="applyIdentify()">Identify</button>
+        <div class="field-row">
+          <label for="clipsGetCount">Count</label>
+          <input id="clipsGetCount" type="number" min="1" placeholder="optional" />
+        </div>
+      </div>
+      <button class="btn btn--primary btn--sm" onclick="applyClipsGet()">↻ Load Clips</button>
+
+      <div class="clip-table-wrap">
+        <table class="clip-table" id="clipsTable">
+          <thead>
+            <tr>
+              <th>ID</th><th>Name</th><th>Start TC</th><th>Duration</th>
+              <th>In TC</th><th>Out TC</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="clipsTableBody">
+            <tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:10px">
+              Click "Load Clips" to populate the timeline.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Clip Info -->
+    <div class="card">
+      <h2 class="card__title">Clip Info</h2>
+      <p class="hint">Query info for a specific clip by ID or name. Leave both blank for the current clip.</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="clipInfoId">Clip ID</label>
+          <input id="clipInfoId" type="number" min="1" placeholder="blank = current" />
+        </div>
+        <div class="field-row">
+          <label for="clipInfoName">Clip Name</label>
+          <input id="clipInfoName" type="text" placeholder="optional" />
+        </div>
+      </div>
+      <button class="btn btn--sm" onclick="applyClipInfo()">Query Clip Info</button>
+      <div id="clipInfoResult" class="result-box" hidden></div>
+    </div>
+
+    <!-- Add Clip -->
+    <div class="card">
+      <h2 class="card__title">Add Clip to Timeline</h2>
+      <p class="hint">Add a clip from the disk to the current timeline. Specify trim points using timecode or frame numbers (mutually exclusive).</p>
+      <div class="field-grid">
+        <div class="field-row span-2">
+          <label for="clipAddName">Clip Name / Path</label>
+          <input id="clipAddName" type="text" placeholder="folder/HyperDeck_0001.mp4" />
+        </div>
+        <div class="field-row">
+          <label for="clipAddBeforeId">Before Clip ID</label>
+          <input id="clipAddBeforeId" type="number" min="1" placeholder="blank = append" />
+        </div>
+        <div class="field-row" style="grid-column:2"><!-- spacer --></div>
+        <div class="field-row">
+          <label for="clipAddInTc">In Timecode</label>
+          <input id="clipAddInTc" type="text" placeholder="optional" class="mono" />
+        </div>
+        <div class="field-row">
+          <label for="clipAddOutTc">Out Timecode</label>
+          <input id="clipAddOutTc" type="text" placeholder="optional" class="mono" />
+        </div>
+        <div class="field-row">
+          <label for="clipAddFrameIn">Frame In</label>
+          <input id="clipAddFrameIn" type="number" min="0" placeholder="optional" />
+        </div>
+        <div class="field-row">
+          <label for="clipAddFrameOut">Frame Out</label>
+          <input id="clipAddFrameOut" type="number" min="0" placeholder="optional" />
+        </div>
+      </div>
+      <button class="btn btn--primary" onclick="applyClipAdd()">Add Clip</button>
+    </div>
+
+    <!-- Remove Clip -->
+    <div class="card">
+      <h2 class="card__title">Remove Clip from Timeline</h2>
+      <div class="field-row">
+        <label for="clipRemoveId">Clip ID</label>
+        <input id="clipRemoveId" type="number" min="1" placeholder="required" />
+      </div>
+      <button class="btn btn--danger btn--sm" onclick="applyClipRemove()">Remove Clip</button>
+    </div>
+
+    <!-- Record -->
+    <div class="card">
+      <h2 class="card__title">Record</h2>
+      <p class="hint">Remote must be enabled. An optional clip name can be set; the deck appends a number automatically.</p>
+      <div class="field-row">
+        <label for="recordName">Clip Name</label>
+        <input id="recordName" type="text" placeholder="optional override" />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--danger btn--primary" onclick="applyRecord()">⏺ Record</button>
+        <button class="btn btn--sm" onclick="sendCmd('stop')">⏹ Stop</button>
+      </div>
+    </div>
+
+    <!-- Record Spill -->
+    <div class="card">
+      <h2 class="card__title">Record Spill</h2>
+      <p class="hint">Continue recording to a different slot when the current slot becomes full.</p>
+      <div class="field-row">
+        <label for="spillSlotId">Slot ID</label>
+        <input id="spillSlotId" type="number" min="1" placeholder="optional" />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--sm" onclick="applyRecordSpill()">Spill to Slot</button>
+        <button class="btn btn--sm" onclick="sendCmd('record spill')">↻ Query Spill</button>
+      </div>
+    </div>
+
+  </div><!-- /tab-clips -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       SLOTS / DISK  – slot info/select/unblock, disk list,
+                       external drives, format
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-slots">
+
+    <!-- Slot Info -->
+    <div class="card">
+      <h2 class="card__title">Slot Info
+        <!-- Response: 202 slot info: slot id, status, volume name, recording time, video format, blocked, sizes -->
+      </h2>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="slotInfoId">Slot ID</label>
+          <input id="slotInfoId" type="number" min="1" placeholder="blank = active slot" />
+        </div>
+        <div class="field-row">
+          <label for="slotInfoDevice">Device name</label>
+          <input id="slotInfoDevice" type="text" placeholder="optional" />
+        </div>
+      </div>
+      <button class="btn btn--sm" onclick="applySlotInfo()">Query Slot</button>
+      <div id="slotInfoResult" class="result-box" hidden></div>
+    </div>
+
+    <!-- Slot Select -->
+    <div class="card">
+      <h2 class="card__title">Slot Select</h2>
+      <p class="hint">Switch active slot, device, or filter timeline by video format. Parameters may be combined.</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="slotSelectId">Slot ID</label>
+          <input id="slotSelectId" type="number" min="1" placeholder="optional" />
+        </div>
+        <div class="field-row">
+          <label for="slotSelectDevice">Device</label>
+          <input id="slotSelectDevice" type="text" placeholder="optional" />
+        </div>
+        <div class="field-row span-2">
+          <label for="slotSelectVidFmt">Video Format</label>
+          <input id="slotSelectVidFmt" type="text" placeholder="e.g. 1080p25 (optional – rescans timeline)" />
+        </div>
+      </div>
+      <button class="btn btn--primary btn--sm" onclick="applySlotSelect()">Select</button>
+    </div>
+
+    <!-- Slot Unblock -->
+    <div class="card">
+      <h2 class="card__title">Slot Unblock</h2>
+      <p class="hint">Unblock a blocked slot. <em>blocked</em> appears in slot info when the disk requires unblocking before use.</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="slotUnblockId">Slot ID</label>
+          <input id="slotUnblockId" type="number" min="1" placeholder="blank = active slot" />
+        </div>
+        <div class="field-row">
+          <label for="slotUnblockDevice">Device</label>
+          <input id="slotUnblockDevice" type="text" placeholder="optional" />
+        </div>
+      </div>
+      <button class="btn btn--sm" onclick="applySlotUnblock()">Unblock</button>
+    </div>
+
+    <!-- Disk List -->
+    <div class="card">
+      <h2 class="card__title">Disk List
+        <!-- Response: 206 disk list: index name fileformat videoformat duration -->
+      </h2>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="diskListSlotId">Slot ID</label>
+          <input id="diskListSlotId" type="number" min="1" placeholder="blank = active slot" />
+        </div>
+        <div class="field-row">
+          <label for="diskListDevice">Device</label>
+          <input id="diskListDevice" type="text" placeholder="optional" />
+        </div>
+      </div>
+      <button class="btn btn--sm" onclick="applyDiskList()">List Disk</button>
+      <div id="diskListResult" class="result-box" hidden></div>
+    </div>
+
+    <!-- External Drives -->
+    <div class="card">
+      <h2 class="card__title">External Drives
+        <!-- Response: 226 external drive info: -->
+      </h2>
+      <p class="hint">Lists USB drives not yet made active. Select a drive to activate it.</p>
+      <div class="btn-row">
+        <button class="btn btn--sm" onclick="sendCmd('external drive list')">↻ List</button>
+        <button class="btn btn--sm" onclick="sendCmd('external drive selected')">Query Selected</button>
+      </div>
+      <div class="field-row" style="margin-top:var(--sp-sm)">
+        <label for="extDriveDevice">Device name</label>
+        <input id="extDriveDevice" type="text" placeholder="device name from list" />
+      </div>
+      <button class="btn btn--primary btn--sm" onclick="applyExtDriveSelect()">Select Drive</button>
+    </div>
+
+    <!-- Format Disk -->
+    <div class="card">
+      <h2 class="card__title">Format Disk</h2>
+      <div class="warning">⚠ Irreversible — all data on the selected disk will be erased.</div>
+      <p class="hint">
+        Step 1: click <strong>Prepare</strong> to receive a token from the device.<br/>
+        Step 2: paste the token and click <strong>Confirm Format</strong>.
+      </p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="fmtSlotId">Slot ID</label>
+          <input id="fmtSlotId" type="number" min="1" placeholder="blank = active slot" />
+        </div>
+        <div class="field-row">
+          <label for="fmtDevice">Device</label>
+          <input id="fmtDevice" type="text" placeholder="optional" />
+        </div>
+        <div class="field-row">
+          <label for="fmtFilesystem">Filesystem</label>
+          <select id="fmtFilesystem">
+            <option value="exFAT">exFAT</option>
+            <option value="HFS+">HFS+</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="fmtVolumeName">Volume Name</label>
+          <input id="fmtVolumeName" type="text" placeholder="optional" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--amber btn--sm" onclick="applyFormatPrepare()">Prepare Format…</button>
+        <button class="btn btn--danger btn--sm" id="btnFormatConfirm" onclick="applyFormatConfirm()" disabled>
+          ✓ Confirm Format
+        </button>
+      </div>
+      <div class="field-row" style="margin-top:var(--sp-sm)">
+        <label for="fmtToken">Token</label>
+        <input id="fmtToken" type="text" class="mono"
+               placeholder="auto-filled from device response or paste here" />
+      </div>
+    </div>
+
+  </div><!-- /tab-slots -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       CONFIGURATION  – all configuration parameters
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-config">
+
+    <div class="card" style="grid-column:1/-1">
+      <div class="card__title-row">
+        <h2 class="card__title">Device Configuration
+          <!-- Query: configuration  |  Response: 211 configuration: -->
+          <!-- Async: 511 configuration: -->
+        </h2>
+        <button class="btn btn--sm" onclick="sendCmd('configuration')">↻ Load from Device</button>
+      </div>
+      <p class="hint">Leave fields at "— unchanged —" to omit them from the command.
+        Changing the file format may reboot the deck (response 213).</p>
+
+      <h3 class="section-heading">Video &amp; Audio</h3>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgVideoInput">Video Input</label>
+          <select id="cfgVideoInput">
+            <option value="">— unchanged —</option>
+            <option>SDI</option><option>4xSDI</option><option>HDMI</option>
+            <option>component</option><option>composite</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="cfgAudioInput">Audio Input</label>
+          <select id="cfgAudioInput">
+            <option value="">— unchanged —</option>
+            <option>embedded</option><option>XLR</option><option>RCA</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="cfgAudioCodec">Audio Codec</label>
+          <select id="cfgAudioCodec">
+            <option value="">— unchanged —</option>
+            <option>PCM</option><option>AAC</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="cfgAudioChannels">Audio Channels</label>
+          <input id="cfgAudioChannels" type="number" min="2" max="16" step="2" placeholder="unchanged" />
+        </div>
+        <div class="field-row">
+          <label for="cfgXlrMapping">XLR Mapping</label>
+          <input id="cfgXlrMapping" type="text" placeholder="none or start channel n" />
+        </div>
+        <div class="field-row">
+          <label for="cfgRcaMapping">RCA Mapping</label>
+          <input id="cfgRcaMapping" type="text" placeholder="none or start channel n" />
+        </div>
+        <div class="field-row">
+          <label for="cfgXlrInputId">XLR Input ID</label>
+          <input id="cfgXlrInputId" type="number" min="1" placeholder="optional" />
+        </div>
+        <div class="field-row">
+          <label for="cfgXlrType">XLR Type</label>
+          <select id="cfgXlrType">
+            <option value="">— unchanged —</option>
+            <option>line</option><option>mic</option>
+          </select>
+        </div>
       </div>
 
-      <div class="card">
-        <h2 class="card__title">Watchdog</h2>
-        <p class="hint">Set to 0 to disable. Client must send a command within the period (seconds) or the connection is dropped.</p>
+      <h3 class="section-heading">File Format</h3>
+      <div class="field-row">
+        <label for="cfgFileFormat">File Format</label>
+        <select id="cfgFileFormat">
+          <option value="">— unchanged —</option>
+          <optgroup label="H.264">
+            <option>H.264High_SDI</option><option>H.264High</option>
+            <option>H.264Medium</option><option>H.264Low</option>
+          </optgroup>
+          <optgroup label="H.265 (HDR models)">
+            <option>H.265High_SDI</option><option>H.265High</option>
+            <option>H.265Medium</option><option>H.265Low</option>
+          </optgroup>
+          <optgroup label="ProRes">
+            <option>QuickTimeProResHQ</option><option>QuickTimeProRes</option>
+            <option>QuickTimeProResLT</option><option>QuickTimeProResProxy</option>
+          </optgroup>
+          <optgroup label="DNxHR (HDR/4K models)">
+            <option>QuickTimeDNxHR_HQX</option><option>DNxHR_HQX</option>
+            <option>QuickTimeDNxHR_SQ</option><option>DNxHR_SQ</option>
+            <option>QuickTimeDNxHR_LB</option><option>DNxHR_LB</option>
+          </optgroup>
+          <optgroup label="DNxHD">
+            <option>QuickTimeDNxHD220x</option><option>DNxHD220x</option>
+            <option>QuickTimeDNxHD145</option><option>DNxHD145</option>
+            <option>QuickTimeDNxHD45</option><option>DNxHD45</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <h3 class="section-heading">Timecode</h3>
+      <div class="field-grid">
         <div class="field-row">
-          <label for="watchdogPeriod">Period (s)</label>
-          <input id="watchdogPeriod" type="number" min="0" value="0" />
+          <label for="cfgTcInput">TC Input</label>
+          <select id="cfgTcInput">
+            <option value="">— unchanged —</option>
+            <option>external</option><option>embedded</option>
+            <option>internal</option><option>preset</option><option>clip</option>
+          </select>
         </div>
+        <div class="field-row">
+          <label for="cfgTcOutput">TC Output</label>
+          <select id="cfgTcOutput">
+            <option value="">— unchanged —</option>
+            <option>clip</option><option>timeline</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="cfgTcPreference">TC Preference</label>
+          <select id="cfgTcPreference">
+            <option value="">— unchanged —</option>
+            <option>default</option><option>dropframe</option><option>nondropframe</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="cfgTcPreset">TC Preset</label>
+          <input id="cfgTcPreset" type="text" placeholder="00:00:00:00" class="mono" />
+        </div>
+      </div>
+
+      <h3 class="section-heading">Recording</h3>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgRecordTrigger">Record Trigger</label>
+          <select id="cfgRecordTrigger">
+            <option value="">— unchanged —</option>
+            <option>none</option><option>recordbit</option><option>timecoderun</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="cfgRecordPrefix">Record Prefix</label>
+          <input id="cfgRecordPrefix" type="text" placeholder="e.g. Clip" />
+        </div>
+        <div class="field-row">
+          <label for="cfgRecordCache">Record Cache</label>
+          <label class="toggle"><input type="checkbox" id="cfgRecordCache" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgAppendTimestamp">Append Timestamp</label>
+          <label class="toggle"><input type="checkbox" id="cfgAppendTimestamp" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgUsbSpill">USB Spill</label>
+          <label class="toggle"><input type="checkbox" id="cfgUsbSpill" /><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <h3 class="section-heading">Reference &amp; Sync</h3>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgRefSource">Reference Source</label>
+          <select id="cfgRefSource">
+            <option value="">— unchanged —</option>
+            <option>auto</option><option>input</option><option>external</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="cfgGenlockResync">Genlock Resync</label>
+          <label class="toggle"><input type="checkbox" id="cfgGenlockResync" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row span-2">
+          <label for="cfgDefaultStandard">Default Standard</label>
+          <input id="cfgDefaultStandard" type="text" placeholder="e.g. 1080p25" />
+        </div>
+      </div>
+
+      <button class="btn btn--primary" style="margin-top:var(--sp-sm)" onclick="applyConfiguration()">
+        Apply Configuration
+      </button>
+    </div>
+
+    <!-- Remote Control -->
+    <div class="card">
+      <h2 class="card__title">Remote Control
+        <!-- Query: remote  |  Response: 210 remote info: enabled, override -->
+        <!-- Async: 510 remote info: -->
+      </h2>
+      <p class="hint">Override bypasses the front-panel remote state for this connection only.</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgRemoteEnabled">Enabled</label>
+          <label class="toggle"><input type="checkbox" id="cfgRemoteEnabled" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgRemoteOverride">Override</label>
+          <label class="toggle"><input type="checkbox" id="cfgRemoteOverride" /><span class="slider"></span></label>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applyRemote()">Apply</button>
+        <button class="btn btn--sm" onclick="sendCmd('remote')">↻ Query</button>
+      </div>
+    </div>
+
+    <!-- Connection Protocol -->
+    <div class="card">
+      <h2 class="card__title">Connection Protocol</h2>
+      <p class="hint">Version 2 changes the clip info response format for <em>clips get</em>.</p>
+      <div class="field-row">
+        <label for="connProtoVersion">Response Version</label>
+        <select id="connProtoVersion">
+          <option value="1">1 – id name startTC duration</option>
+          <option value="2">2 – id clipStartTC duration inTC outTC path</option>
+        </select>
+      </div>
+      <button class="btn btn--sm" onclick="applyConnectionProtocol()">Apply</button>
+    </div>
+
+    <!-- Authenticate -->
+    <div class="card">
+      <h2 class="card__title">Authenticate</h2>
+      <p class="hint">Required when the HyperDeck is configured for secure access (error 122).</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="authUsername">Username</label>
+          <input id="authUsername" type="text" placeholder="username" />
+        </div>
+        <div class="field-row">
+          <label for="authPassword">Password</label>
+          <input id="authPassword" type="password" placeholder="password" />
+        </div>
+      </div>
+      <button class="btn btn--primary btn--sm" onclick="applyAuthenticate()">Authenticate</button>
+    </div>
+
+  </div><!-- /tab-config -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       NOTIFICATIONS  – all notify subscriptions
+       Response: 209 notify: (query)  |  Async: 5xx with matching data
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-notify">
+    <div class="card" style="grid-column:1/-1">
+      <div class="card__title-row">
+        <h2 class="card__title">Asynchronous Notifications</h2>
+        <button class="btn btn--sm" onclick="sendCmd('notify')">↻ Query All</button>
+      </div>
+      <p class="hint">
+        When enabled, the device sends asynchronous 5xx messages whenever the subscribed state changes.
+        These appear in the Console and update the UI automatically.
+      </p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="notTransport">transport (508)</label>
+          <label class="toggle"><input type="checkbox" id="notTransport" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notSlot">slot (502)</label>
+          <label class="toggle"><input type="checkbox" id="notSlot" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notRemote">remote (510)</label>
+          <label class="toggle"><input type="checkbox" id="notRemote" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notConfiguration">configuration (511)</label>
+          <label class="toggle"><input type="checkbox" id="notConfiguration" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notDroppedFrames">dropped frames</label>
+          <label class="toggle"><input type="checkbox" id="notDroppedFrames" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notDisplayTimecode">display timecode</label>
+          <label class="toggle"><input type="checkbox" id="notDisplayTimecode" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notTimelinePosition">timeline position</label>
+          <label class="toggle"><input type="checkbox" id="notTimelinePosition" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notPlayrange">playrange</label>
+          <label class="toggle"><input type="checkbox" id="notPlayrange" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notCache">cache</label>
+          <label class="toggle"><input type="checkbox" id="notCache" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notDynamicRange">dynamic range</label>
+          <label class="toggle"><input type="checkbox" id="notDynamicRange" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notSlate">slate</label>
+          <label class="toggle"><input type="checkbox" id="notSlate" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notClips">clips (519)</label>
+          <label class="toggle"><input type="checkbox" id="notClips" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notDisk">disk (520)</label>
+          <label class="toggle"><input type="checkbox" id="notDisk" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notDeviceInfo">device info</label>
+          <label class="toggle"><input type="checkbox" id="notDeviceInfo" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="notNas">nas</label>
+          <label class="toggle"><input type="checkbox" id="notNas" /><span class="slider"></span></label>
+        </div>
+      </div>
+      <button class="btn btn--primary" onclick="applyNotifications()">Apply Notifications</button>
+    </div>
+  </div><!-- /tab-notify -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       DYNAMIC RANGE  – HDR/SDR conversion overrides
+       Query: dynamic range  |  Response: (code varies by firmware)
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-dynrange">
+    <div class="card">
+      <h2 class="card__title">Dynamic Range Overrides</h2>
+      <p class="hint">
+        Controls HDR/SDR conversion applied on playback output and/or recording input.
+        Available on HyperDeck Extreme HDR models.
+      </p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="drPlaybackOverride">Playback Override</label>
+          <select id="drPlaybackOverride">
+            <option value="">— unchanged —</option>
+            <option>off</option>
+            <option>Rec709</option><option>Rec2020_SDR</option><option>HLG</option>
+            <option>ST2084_300</option><option>ST2084_500</option><option>ST2084_800</option>
+            <option>ST2084_1000</option><option>ST2084_2000</option><option>ST2084_4000</option>
+            <option>ST2048</option><option>none</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="drRecordOverride">Record Override</label>
+          <select id="drRecordOverride">
+            <option value="">— unchanged —</option>
+            <option>off</option>
+            <option>Rec709</option><option>Rec2020_SDR</option><option>HLG</option>
+            <option>ST2084_300</option><option>ST2084_500</option><option>ST2084_800</option>
+            <option>ST2084_1000</option><option>ST2084_2000</option><option>ST2084_4000</option>
+            <option>ST2048</option><option>none</option>
+          </select>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applyDynamicRange()">Apply</button>
+        <button class="btn btn--sm" onclick="sendCmd('dynamic range')">↻ Query</button>
+      </div>
+    </div>
+  </div><!-- /tab-dynrange -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       SLATE  – metadata: clips, project, lens  (multiline only)
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-slate">
+
+    <!-- Slate Clips -->
+    <div class="card">
+      <h2 class="card__title">Slate — Clips
+        <!-- multiline command: slate clips:\n reel: n\n ... -->
+      </h2>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="slateReel">Reel</label>
+          <input id="slateReel" type="number" min="1" max="999" placeholder="1–999" />
+        </div>
+        <div class="field-row">
+          <label for="slateSceneId">Scene ID</label>
+          <input id="slateSceneId" type="text" placeholder="e.g. 42A" />
+        </div>
+        <div class="field-row">
+          <label for="slateShotType">Shot Type</label>
+          <select id="slateShotType">
+            <option value="">— unchanged —</option>
+            <option>WS</option><option>MS</option><option>CU</option>
+            <option>BCU</option><option>MCU</option><option>ECU</option><option>none</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="slateTake">Take</label>
+          <input id="slateTake" type="number" min="1" max="99" placeholder="1–99" />
+        </div>
+        <div class="field-row">
+          <label for="slateTakeScenario">Take Scenario</label>
+          <select id="slateTakeScenario">
+            <option value="">— unchanged —</option>
+            <option>PU</option><option>VFX</option><option>SER</option><option>none</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="slateTakeAutoInc">Take Auto Inc</label>
+          <select id="slateTakeAutoInc">
+            <option value="">— unchanged —</option>
+            <option value="true">true</option><option value="false">false</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="slateGoodTake">Good Take</label>
+          <select id="slateGoodTake">
+            <option value="">— unchanged —</option>
+            <option value="true">true</option><option value="false">false</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="slateEnvironment">Environment</label>
+          <select id="slateEnvironment">
+            <option value="">— unchanged —</option>
+            <option>interior</option><option>exterior</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label for="slateDayNight">Day / Night</label>
+          <select id="slateDayNight">
+            <option value="">— unchanged —</option>
+            <option>day</option><option>night</option>
+          </select>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applySlateClips()">Set</button>
+        <button class="btn btn--sm" onclick="sendCmd('slate clips')">↻ Query</button>
+      </div>
+    </div>
+
+    <!-- Slate Project -->
+    <div class="card">
+      <h2 class="card__title">Slate — Project
+        <!-- multiline command: slate project:\n project name: ...\n ... -->
+      </h2>
+      <div class="field-grid">
+        <div class="field-row span-2">
+          <label for="slateProjName">Project Name</label>
+          <input id="slateProjName" type="text" placeholder="supports UTF-8, can be empty" />
+        </div>
+        <div class="field-row">
+          <label for="slateCamera">Camera</label>
+          <input id="slateCamera" type="text" placeholder="e.g. A" />
+        </div>
+        <div class="field-row">
+          <label for="slateDirector">Director</label>
+          <input id="slateDirector" type="text" placeholder="supports UTF-8" />
+        </div>
+        <div class="field-row span-2">
+          <label for="slateCamOp">Camera Operator</label>
+          <input id="slateCamOp" type="text" placeholder="supports UTF-8" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applySlateProject()">Set</button>
+        <button class="btn btn--sm" onclick="sendCmd('slate project')">↻ Query</button>
+      </div>
+    </div>
+
+    <!-- Slate Lens -->
+    <div class="card">
+      <h2 class="card__title">Slate — Lens
+        <!-- multiline command: slate lens:\n lens type: ...\n ... -->
+      </h2>
+      <div class="field-grid">
+        <div class="field-row span-2">
+          <label for="slateLensType">Lens Type</label>
+          <input id="slateLensType" type="text" placeholder="supports UTF-8, can be empty" />
+        </div>
+        <div class="field-row">
+          <label for="slateIris">Iris</label>
+          <input id="slateIris" type="text" placeholder="supports UTF-8" />
+        </div>
+        <div class="field-row">
+          <label for="slateFocalLength">Focal Length</label>
+          <input id="slateFocalLength" type="text" placeholder="supports UTF-8" />
+        </div>
+        <div class="field-row">
+          <label for="slateDistance">Distance</label>
+          <input id="slateDistance" type="text" placeholder="supports UTF-8" />
+        </div>
+        <div class="field-row">
+          <label for="slateFilter">Filter</label>
+          <input id="slateFilter" type="text" placeholder="supports UTF-8" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applySlateLens()">Set</button>
+        <button class="btn btn--sm" onclick="sendCmd('slate lens')">↻ Query</button>
+      </div>
+    </div>
+
+  </div><!-- /tab-slate -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       NAS  – Network Area Storage
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-nas">
+
+    <div class="card">
+      <h2 class="card__title">NAS Discovery &amp; Bookmarks</h2>
+      <div class="btn-row">
+        <button class="btn btn--sm" onclick="sendCmd('nas discovered')">↻ Discover (mDNS)</button>
+        <button class="btn btn--sm" onclick="sendCmd('nas list')">↻ List Bookmarks</button>
+        <button class="btn btn--sm" onclick="sendCmd('nas selected')">↻ Query Selected</button>
+        <button class="btn btn--sm btn--danger" onclick="sendCmd('nas deselect')">Deselect / Unmount</button>
+      </div>
+      <p class="hint" style="margin-top:var(--sp-sm)">
+        After mounting with <em>nas select</em>, query <em>slot info: device: network</em>
+        or enable slot notifications to confirm the share is mounted.
+      </p>
+    </div>
+
+    <!-- Add NAS bookmark -->
+    <div class="card">
+      <h2 class="card__title">Add NAS Bookmark
+        <!-- multiline command: nas add:\n url: ...\n username: ...\n password: ... -->
+      </h2>
+      <p class="hint">e.g. smb://CloudStore80.local/Studio1 &nbsp;·&nbsp; Use secure connection to avoid sending passwords as plaintext.</p>
+      <div class="field-grid">
+        <div class="field-row span-2">
+          <label for="nasAddUrl">URL</label>
+          <input id="nasAddUrl" type="text" placeholder="smb://server.local/share" />
+        </div>
+        <div class="field-row">
+          <label for="nasAddUsername">Username</label>
+          <input id="nasAddUsername" type="text" placeholder="optional (guest if blank)" />
+        </div>
+        <div class="field-row">
+          <label for="nasAddPassword">Password</label>
+          <input id="nasAddPassword" type="password" placeholder="optional" />
+        </div>
+      </div>
+      <button class="btn btn--primary btn--sm" onclick="applyNasAdd()">Add NAS Bookmark</button>
+    </div>
+
+    <!-- Remove NAS bookmark -->
+    <div class="card">
+      <h2 class="card__title">Remove NAS Bookmark
+        <!-- multiline command: nas remove:\n url: ... -->
+      </h2>
+      <div class="field-row">
+        <label for="nasRemoveUrl">URL</label>
+        <input id="nasRemoveUrl" type="text" placeholder="smb://server.local/share" />
+      </div>
+      <button class="btn btn--danger btn--sm" onclick="applyNasRemove()">Remove Bookmark</button>
+    </div>
+
+    <!-- Mount NAS share -->
+    <div class="card">
+      <h2 class="card__title">Mount NAS Share
+        <!-- multiline command: nas select:\n url: ... -->
+      </h2>
+      <p class="hint">Mounts asynchronously. Uses credentials from matching bookmark, otherwise guest.</p>
+      <div class="field-row">
+        <label for="nasSelectUrl">URL</label>
+        <input id="nasSelectUrl" type="text" placeholder="smb://server.local/share" />
+      </div>
+      <button class="btn btn--primary btn--sm" onclick="applyNasSelect()">Mount Share</button>
+    </div>
+
+    <!-- Slot info for NAS -->
+    <div class="card">
+      <h2 class="card__title">NAS Slot Status</h2>
+      <p class="hint">Query the <em>network</em> device slot to check mount status after <em>nas select</em>.</p>
+      <button class="btn btn--sm" onclick="sendCmd('slot info: device: network')">Query NAS Slot</button>
+      <div id="nasSlotResult" class="result-box" hidden></div>
+    </div>
+
+  </div><!-- /tab-nas -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       ADVANCED  – utility commands: ping, help, commands XML,
+                   uptime, cache info, identify, watchdog, reboot
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-advanced">
+
+    <!-- Utility -->
+    <div class="card">
+      <h2 class="card__title">Utility Commands</h2>
+      <div class="btn-row">
+        <button class="btn btn--sm" onclick="sendCmd('ping')" title="ping → 200 ok">Ping</button>
+        <button class="btn btn--sm" onclick="sendCmd('help')" title="help → 201 help:">Help</button>
+        <button class="btn btn--sm" onclick="sendCmd('?')"   title="? → 201 help:">?</button>
+        <button class="btn btn--sm" onclick="sendCmd('commands')" title="commands → 212 commands: (XML)">Commands (XML)</button>
+        <button class="btn btn--sm" onclick="sendCmd('uptime')"   title="uptime — time since last boot">Uptime</button>
+        <button class="btn btn--sm" onclick="sendCmd('cache info')">Cache Info</button>
+      </div>
+      <div id="advUtilResult" class="result-box" hidden></div>
+    </div>
+
+    <!-- Identify -->
+    <div class="card">
+      <h2 class="card__title">Identify</h2>
+      <p class="hint">Flash the front panel LEDs to physically identify a unit.</p>
+      <div class="field-row">
+        <label for="identifyEnable">Enable Flash</label>
+        <label class="toggle"><input type="checkbox" id="identifyEnable" checked /><span class="slider"></span></label>
+      </div>
+      <button class="btn btn--sm" onclick="applyIdentify()">Identify</button>
+    </div>
+
+    <!-- Watchdog -->
+    <div class="card">
+      <h2 class="card__title">Watchdog</h2>
+      <p class="hint">
+        Device closes the connection if no command is received within <em>period</em> seconds.
+        Set period ≤ 0 to disable. The app sends a <em>ping</em> automatically to maintain the connection.
+      </p>
+      <div class="field-row">
+        <label for="watchdogPeriod">Period (s)</label>
+        <input id="watchdogPeriod" type="number" value="0" min="0" />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--sm" onclick="applyWatchdog()">Set Watchdog</button>
+        <button class="btn btn--sm" onclick="sendCmd('watchdog')">↻ Query</button>
+      </div>
+    </div>
+
+    <!-- Reboot -->
+    <div class="card">
+      <h2 class="card__title">Reboot Device</h2>
+      <div class="warning">⚠ The device will reboot and the connection will be closed.</div>
+      <button class="btn btn--danger btn--sm" onclick="confirmReboot()">Reboot Device</button>
+    </div>
+
+    <!-- Quit -->
+    <div class="card">
+      <h2 class="card__title">Close Connection</h2>
+      <p class="hint">Instruct the HyperDeck to cleanly close the TCP connection.</p>
+      <button class="btn btn--sm" onclick="sendCmd('quit')">Quit</button>
+    </div>
+
+    <!-- Raw command -->
+    <div class="card">
+      <h2 class="card__title">Raw Command</h2>
+      <p class="hint">Send any raw protocol command. Use <code>\n</code> for multiline blocks.</p>
+      <div class="field-row" style="gap:var(--sp-xs)">
+        <input id="rawCmd" type="text" class="mono" placeholder="e.g. transport info" />
+        <button class="btn btn--primary btn--sm" onclick="sendRawCommand()">Send</button>
+      </div>
+    </div>
+
+  </div><!-- /tab-advanced -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       CONSOLE  – raw protocol log with colour coding
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-console">
+    <div class="card console-wrap" style="flex:1;min-height:0">
+      <div class="card__title-row">
+        <h2 class="card__title">Protocol Console</h2>
         <div class="btn-row">
-          <button class="btn btn--secondary" onclick="applyWatchdog()">Set Watchdog</button>
-          <button class="btn btn--secondary btn--sm" onclick="sendCmd('watchdog')">↻ Query</button>
+          <label style="font-size:.78em;color:var(--text-secondary);display:flex;align-items:center;gap:4px">
+            <input type="checkbox" id="consoleAutoScroll" checked /> Auto-scroll
+          </label>
+          <button class="btn btn--xs" onclick="clearConsole()">Clear</button>
         </div>
       </div>
-
-      <div class="card">
-        <h2 class="card__title">Raw Command</h2>
-        <div class="field-row">
-          <input id="rawCommand" type="text" placeholder="e.g. transport info" class="mono" />
-          <button class="btn btn--primary" onclick="sendRawCommand()">Send</button>
-        </div>
+      <p class="hint">
+        <span style="color:#7ec8e3">■ Sent commands</span>&nbsp;·&nbsp;
+        <span style="color:var(--accent-green)">■ 200 ok</span>&nbsp;·&nbsp;
+        <span style="color:var(--text-primary)">■ 2xx responses</span>&nbsp;·&nbsp;
+        <span style="color:var(--accent-amber)">■ 5xx async</span>&nbsp;·&nbsp;
+        <span style="color:var(--accent-red)">■ 1xx errors</span>
+      </p>
+      <div class="console-output" id="consoleOutput"></div>
+      <div class="console-input-row">
+        <input id="consoleInput" type="text" class="mono"
+               placeholder="Type a command and press Enter (use ↑/↓ for history)…" />
+        <button class="btn btn--primary btn--sm" onclick="sendConsoleCommand()">Send</button>
       </div>
+    </div>
+  </div><!-- /tab-console -->
 
-    </div><!-- /tab-advanced -->
-
-    <!-- ==================== CONSOLE ==================== -->
-    <div class="tab-panel" id="tab-console">
-      <div class="card console-card">
-        <div class="card__title-row">
-          <h2 class="card__title">Protocol Console</h2>
-          <div class="btn-row" style="margin:0">
-            <label class="toggle-label">
-              <input type="checkbox" id="consoleScroll" checked /> Auto-scroll
-            </label>
-            <button class="btn btn--sm btn--secondary" onclick="clearConsole()">Clear</button>
-          </div>
-        </div>
-        <div class="console" id="console"></div>
-        <div class="console-input-row">
-          <input id="consoleInput" type="text" class="mono" placeholder="Type a command and press Enter…" />
-          <button class="btn btn--primary" onclick="sendConsoleCommand()">Send</button>
-        </div>
-      </div>
-    </div><!-- /tab-console -->
-
-  </section><!-- /content -->
+</section><!-- /content -->
 </main>
 
+<!-- Toast notification -->
 <div id="toast" class="toast" hidden></div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>
