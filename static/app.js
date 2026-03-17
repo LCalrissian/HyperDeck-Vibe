@@ -45,6 +45,24 @@ let pendingFormatToken = "";
 let watchdogIntervalId = null;
 const WATCHDOG_INTERVAL_MS = 20_000;
 
+/** Conditional transport refresh timer and in-flight guard. */
+let transportRefreshIntervalId = null;
+let transportRefreshInFlight = false;
+let transportRefreshTimeoutId = null;
+let transportRefreshArmedByCommand = false;
+const TRANSPORT_REFRESH_INTERVAL_MS = 500;
+const TRANSPORT_REFRESH_TIMEOUT_MS = 1_500;
+const TRANSPORT_TRANSITION_WINDOW_MS = 3_000;
+let transportTransitionDeadlineMs = 0;
+let lastObservedClipId = "";
+
+/** Saved connection profiles via backend JSON API. */
+const CONNECTIONS_API_BASE = "/api/connections";
+let savedConnectionProfiles = [];
+let lastSyncedConnectionModelKey = "";
+let draggedConnectionId = null;
+let didConnectionDrag = false;
+
 // ============================================================
 // SECTION: WebSocket management
 // ============================================================
@@ -79,6 +97,7 @@ function openWebSocket() {
     updateConnectionUI(false);
     socket = null;
     stopWatchdog();
+    stopTransportAutoRefresh();
   });
 
   socket.addEventListener("error", () => {
@@ -122,6 +141,7 @@ function handleServerMessage(message) {
     case "disconnected":
       updateConnectionUI(false);
       stopWatchdog();
+      stopTransportAutoRefresh();
       break;
 
     case "raw_line":
@@ -139,6 +159,11 @@ function handleServerMessage(message) {
 
     case "state":
       deviceState = message.state || {};
+      updateConnectionUI(
+        deviceState.is_connected === true,
+        deviceState.host || "",
+        deviceState.port || "",
+      );
       applyStateToUI(deviceState);
       break;
 
@@ -238,6 +263,7 @@ function handleParsedResponse(code, text, kv) {
     // ── 208 / 508  transport info ──────────────────────────────────────
     case 208:
     case 508:
+      clearTransportRefreshInFlight();
       break; // state update handled via "state" message
 
     // ── 209  notify ────────────────────────────────────────────────────
@@ -383,7 +409,14 @@ function applyStateToUI(state) {
 
   // Timecode displays (use display timecode when available, fall back to transport)
   const displayTC = state.transport_display_timecode || state.transport_timecode || "--:--:--:--";
-  setText("sidebarTimecode", displayTC);
+  const sidebarTimecodeEl = document.getElementById("sidebarTimecode");
+  if (state.is_connected === false) {
+    setText("sidebarTimecode", "DISCONNECTED");
+    sidebarTimecodeEl?.classList.add("timecode-display--disconnected");
+  } else {
+    setText("sidebarTimecode", displayTC);
+    sidebarTimecodeEl?.classList.remove("timecode-display--disconnected");
+  }
   setText("dashTimecode",    displayTC);
   setText("dashTlTimecode",  state.transport_timecode || "—");
 
@@ -403,8 +436,8 @@ function applyStateToUI(state) {
   // ── Remote info ───────────────────────────────────────────────────────
   setText("remEnabled",  boolYesNo(state.remote_enabled));
   setText("remOverride", boolYesNo(state.remote_override));
-  setText("dashRemEnabled",  boolEnabledDisabled(state.remote_enabled));
-  setText("dashRemOverride", boolYesNo(state.remote_override));
+  updateDashboardRemoteToggle(state.remote_enabled);
+  updateDashboardOverrideToggle(state.remote_override);
 
   // ── Configuration summary (dashboard) ─────────────────────────────────
   setText("dashCfgVidIn",    state.cfg_video_input          || "—");
@@ -417,6 +450,82 @@ function applyStateToUI(state) {
   setText("dashCfgRecPrefix",state.cfg_record_prefix        || "—");
   setText("dashCfgRefSrc",   state.cfg_reference_source     || "—");
   setText("dashCfgUsbSpill", boolYesNo(state.cfg_usb_spill));
+
+  maybeSyncConnectedModel(state);
+  maybeRefreshAfterClipIdChange(state);
+  syncTransportAutoRefresh(state);
+}
+
+function maybeRefreshAfterClipIdChange(state) {
+  const currentClipId = String(state.transport_clip_id || "").trim();
+  if (!currentClipId) {
+    lastObservedClipId = "";
+    return;
+  }
+
+  if (currentClipId === lastObservedClipId) {
+    return;
+  }
+
+  lastObservedClipId = currentClipId;
+
+  // Clip changes can precede timecode stabilization by a few frames.
+  requestTransportRefresh();
+  setTimeout(() => requestTransportRefresh(), 250);
+}
+
+function updateDashboardRemoteToggle(isEnabled) {
+  const btn = document.getElementById("dashRemoteToggleBtn");
+  if (!btn) return;
+  const enabled = isEnabled === true || isEnabled === "true";
+
+  if (enabled) {
+    btn.textContent = "Remote Enabled";
+    btn.classList.remove("state-disabled");
+    btn.classList.add("state-enabled");
+  } else {
+    btn.textContent = "Remote Disabled";
+    btn.classList.remove("state-enabled");
+    btn.classList.add("state-disabled");
+  }
+}
+
+function toggleDashboardRemote() {
+  const enabled = stateFlagEnabled(deviceState.remote_enabled);
+  sendCmd(`remote: enable: ${enabled ? "false" : "true"}`);
+  requestRemoteStateRefresh();
+}
+
+function updateDashboardOverrideToggle(isEnabled) {
+  const btn = document.getElementById("dashOverrideToggleBtn");
+  if (!btn) return;
+  const enabled = isEnabled === true || isEnabled === "true";
+
+  if (enabled) {
+    btn.textContent = "Override Enabled";
+    btn.classList.remove("state-disabled");
+    btn.classList.add("state-enabled");
+  } else {
+    btn.textContent = "Override Disabled";
+    btn.classList.remove("state-enabled");
+    btn.classList.add("state-disabled");
+  }
+}
+
+function toggleDashboardOverride() {
+  const enabled = stateFlagEnabled(deviceState.remote_override);
+  sendCmd(`remote: override: ${enabled ? "false" : "true"}`);
+  requestRemoteStateRefresh();
+}
+
+function requestRemoteStateRefresh() {
+  // Keep UI authoritative even if 510 notify arrives late or is dropped.
+  setTimeout(() => sendCmd("remote", { quiet: true }), 100);
+  setTimeout(() => sendCmd("remote", { quiet: true }), 400);
+}
+
+function stateFlagEnabled(value) {
+  return value === true || String(value).trim().toLowerCase() === "true";
 }
 
 /**
@@ -498,8 +607,8 @@ function applyNotifyStateToUI(kv) {
 
 /** Called on the Connect button click. */
 function uiConnect() {
-  const host = document.getElementById("inputHost").value.trim();
-  const port = parseInt(document.getElementById("inputPort").value, 10) || 9993;
+  const host = String(document.getElementById("connProfileHost")?.value || "").trim();
+  const port = parseInt(String(document.getElementById("connProfilePort")?.value || "9993"), 10) || 9993;
   if (!host) { showToast("Enter a host IP address", "error"); return; }
 
   if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -517,28 +626,309 @@ function uiDisconnect() {
   sendToBackend({ action: "disconnect" });
 }
 
+function onTopbarStatusClick(event) {
+  event?.stopPropagation();
+  if (!deviceState.is_connected) {
+    activateTab("connections");
+    showToast("Use Connections tab to connect", "warn");
+    return;
+  }
+
+  const shouldDisconnect = window.confirm("Disconnect from the current HyperDeck?");
+  if (shouldDisconnect) {
+    uiDisconnect();
+  }
+}
+
+function onSidebarTimecodeClick(event) {
+  event?.stopPropagation();
+  if (deviceState.is_connected) {
+    return;
+  }
+
+  activateTab("connections");
+  showToast("Use Connections tab to connect", "warn");
+}
+
 /**
  * Update connection state widgets: dot colour, status text, button states.
  */
 function updateConnectionUI(isConnected, host = "", port = "") {
   const dot        = document.getElementById("statusDot");
   const statusText = document.getElementById("statusText");
-  const btnConn    = document.getElementById("btnConnect");
-  const btnDisc    = document.getElementById("btnDisconnect");
+  const connectionsTabBtn = document.getElementById("connectionsTabBtn");
+  const sidebarTimecode = document.getElementById("sidebarTimecode");
 
   if (isConnected) {
     dot.className = "dot dot--on";
     statusText.textContent = `${host}:${port}`;
-    btnConn.disabled = true;
-    btnDisc.disabled = false;
+    connectionsTabBtn?.classList.remove("tab--needs-connection");
+    sidebarTimecode?.classList.remove("timecode-display--disconnected");
   } else {
     dot.className = "dot dot--off";
     statusText.textContent = "Disconnected";
-    btnConn.disabled = false;
-    btnDisc.disabled = true;
+    connectionsTabBtn?.classList.add("tab--needs-connection");
+    lastSyncedConnectionModelKey = "";
     // Reset live displays
-    setText("sidebarTimecode", "--:--:--:--");
+    setText("sidebarTimecode", "DISCONNECTED");
+    sidebarTimecode?.classList.add("timecode-display--disconnected");
     setText("dashTimecode",    "--:--:--:--");
+  }
+
+  // Refresh connected marker in saved profile rows.
+  renderConnectionProfiles();
+}
+
+async function loadConnectionProfiles() {
+  try {
+    const res = await fetch(CONNECTIONS_API_BASE);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    savedConnectionProfiles = Array.isArray(payload.connections) ? payload.connections : [];
+    renderConnectionProfiles();
+  } catch (err) {
+    consoleLog(`[Connections] failed to load profiles: ${err}`, "cl--error");
+  }
+}
+
+function renderConnectionProfiles() {
+  const list = document.getElementById("savedConnectionsList");
+  if (!list) return;
+
+  if (!savedConnectionProfiles.length) {
+    list.innerHTML = `<div class="hint">No saved connections yet.</div>`;
+    return;
+  }
+
+  list.innerHTML = "";
+  savedConnectionProfiles.forEach((entry) => {
+    const item = document.createElement("div");
+    item.className = "saved-connection-item";
+    item.draggable = true;
+    item.dataset.connectionId = String(entry.id || "");
+    item.addEventListener("click", () => onSavedConnectionClick(entry.id));
+    item.addEventListener("dragstart", (event) => onConnectionDragStart(event, entry.id));
+    item.addEventListener("dragover", onConnectionDragOver);
+    item.addEventListener("drop", (event) => onConnectionDrop(event, entry.id));
+    item.addEventListener("dragend", onConnectionDragEnd);
+
+    const modelText = entry.model && String(entry.model).trim() ? entry.model : "Model unknown";
+    const isEntryConnected =
+      deviceState.is_connected === true &&
+      String(deviceState.host || "").trim() === String(entry.host || "").trim() &&
+      parseInt(String(deviceState.port || ""), 10) === parseInt(String(entry.port || ""), 10);
+
+    const connectedBadge = isEntryConnected
+      ? `<div class="saved-connection-live"><span class="dot dot--on"></span><span>Connected</span></div>`
+      : "";
+
+    item.innerHTML = `
+      <div class="saved-connection-main">
+        <div class="saved-connection-name">${escapeHtml(entry.name || "Unnamed")}</div>
+        <div class="saved-connection-address mono">${escapeHtml(entry.host || "")} : ${escapeHtml(String(entry.port || ""))}</div>
+        <div class="saved-connection-model">${escapeHtml(modelText)}</div>
+        ${connectedBadge}
+      </div>
+      <button class="btn btn--sm btn--danger" data-id="${escapeHtml(String(entry.id || ""))}">Delete</button>
+    `;
+
+    const deleteBtn = item.querySelector("button[data-id]");
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        await deleteConnectionProfile(entry.id);
+      });
+    }
+
+    list.appendChild(item);
+  });
+}
+
+function onSavedConnectionClick(profileId) {
+  // Browsers can fire click after drag-drop; suppress connect dialog in that case.
+  if (didConnectionDrag) {
+    didConnectionDrag = false;
+    return;
+  }
+
+  selectConnectionProfile(profileId);
+
+  const entry = savedConnectionProfiles.find((p) => String(p.id) === String(profileId));
+  if (!entry) return;
+
+  const label = entry.name ? `${entry.name} (${entry.host}:${entry.port})` : `${entry.host}:${entry.port}`;
+  const isEntryConnected =
+    deviceState.is_connected === true &&
+    String(deviceState.host || "").trim() === String(entry.host || "").trim() &&
+    parseInt(String(deviceState.port || ""), 10) === parseInt(String(entry.port || ""), 10);
+
+  if (isEntryConnected) {
+    const shouldDisconnect = window.confirm(`Disconnect from ${label}?`);
+    if (shouldDisconnect) {
+      uiDisconnect();
+    }
+    return;
+  }
+
+  const shouldConnect = window.confirm(`Connect to ${label}?`);
+  if (shouldConnect) {
+    uiConnect();
+  }
+}
+
+function selectConnectionProfile(profileId) {
+  const entry = savedConnectionProfiles.find((p) => String(p.id) === String(profileId));
+  if (!entry) return;
+
+  const profileNameInput = document.getElementById("connProfileName");
+  const profileHostInput = document.getElementById("connProfileHost");
+  const profilePortInput = document.getElementById("connProfilePort");
+
+  if (profileNameInput) profileNameInput.value = entry.name || "";
+  if (profileHostInput) profileHostInput.value = entry.host || "";
+  if (profilePortInput) profilePortInput.value = String(entry.port || 9993);
+
+  showToast("Connection fields populated", "ok");
+}
+
+async function addConnectionProfileFromForm() {
+  const name = String(document.getElementById("connProfileName")?.value || "").trim();
+  const host = String(document.getElementById("connProfileHost")?.value || "").trim();
+  const port = parseInt(String(document.getElementById("connProfilePort")?.value || "9993"), 10) || 9993;
+
+  if (!name) {
+    showToast("Enter a descriptive name", "error");
+    return;
+  }
+  if (!host) {
+    showToast("Enter a Host / IP", "error");
+    return;
+  }
+
+  try {
+    const res = await fetch(CONNECTIONS_API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, host, port }),
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      throw new Error(payload.detail || `HTTP ${res.status}`);
+    }
+
+    showToast("Saved connection", "ok");
+    await loadConnectionProfiles();
+  } catch (err) {
+    showToast(`Failed to save: ${err}`, "error");
+  }
+}
+
+async function deleteConnectionProfile(profileId) {
+  const ok = window.confirm("Delete this saved connection?");
+  if (!ok) return;
+
+  try {
+    const res = await fetch(`${CONNECTIONS_API_BASE}/${encodeURIComponent(String(profileId))}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      throw new Error(payload.detail || `HTTP ${res.status}`);
+    }
+
+    showToast("Connection deleted", "ok");
+    await loadConnectionProfiles();
+  } catch (err) {
+    showToast(`Delete failed: ${err}`, "error");
+  }
+}
+
+function onConnectionDragStart(event, profileId) {
+  didConnectionDrag = true;
+  draggedConnectionId = String(profileId);
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", draggedConnectionId);
+  event.currentTarget.classList.add("is-dragging");
+}
+
+function onConnectionDragOver(event) {
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+}
+
+async function onConnectionDrop(event, targetProfileId) {
+  event.preventDefault();
+  const sourceId = draggedConnectionId || event.dataTransfer.getData("text/plain");
+  const targetId = String(targetProfileId);
+  if (!sourceId || !targetId || sourceId === targetId) {
+    return;
+  }
+
+  const sourceIndex = savedConnectionProfiles.findIndex((p) => String(p.id) === String(sourceId));
+  const targetIndex = savedConnectionProfiles.findIndex((p) => String(p.id) === targetId);
+  if (sourceIndex < 0 || targetIndex < 0) {
+    return;
+  }
+
+  const next = [...savedConnectionProfiles];
+  const [moved] = next.splice(sourceIndex, 1);
+  next.splice(targetIndex, 0, moved);
+  savedConnectionProfiles = next;
+  renderConnectionProfiles();
+
+  try {
+    const ids = savedConnectionProfiles.map((entry) => entry.id);
+    const res = await fetch(`${CONNECTIONS_API_BASE}/reorder`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      throw new Error(payload.detail || `HTTP ${res.status}`);
+    }
+  } catch (err) {
+    showToast(`Reorder failed: ${err}`, "error");
+    await loadConnectionProfiles();
+  }
+}
+
+function onConnectionDragEnd(event) {
+  draggedConnectionId = null;
+  event.currentTarget.classList.remove("is-dragging");
+  // Delay reset so any synthetic click fired after drag is still suppressed.
+  setTimeout(() => {
+    didConnectionDrag = false;
+  }, 0);
+}
+
+async function maybeSyncConnectedModel(state) {
+  if (!state || !state.is_connected) return;
+
+  const host = String(state.host || "").trim();
+  const model = String(state.model || "").trim();
+  const port = parseInt(String(state.port || ""), 10);
+  if (!host || !model || !Number.isFinite(port)) return;
+
+  const syncKey = `${host}:${port}:${model}`;
+  if (syncKey === lastSyncedConnectionModelKey) return;
+  lastSyncedConnectionModelKey = syncKey;
+
+  try {
+    await fetch(`${CONNECTIONS_API_BASE}/model`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, port, model }),
+    });
+
+    const hasMatchingProfile = savedConnectionProfiles.some(
+      (p) => String(p.host || "").trim() === host && parseInt(String(p.port || ""), 10) === port,
+    );
+    if (hasMatchingProfile) {
+      await loadConnectionProfiles();
+    }
+  } catch (err) {
+    consoleLog(`[Connections] model sync failed: ${err}`, "cl--error");
   }
 }
 
@@ -550,12 +940,17 @@ function updateConnectionUI(isConnected, host = "", port = "") {
  * Send a HyperDeck command string to the backend.
  * This is the single entry point for all command dispatch.
  */
-function sendCmd(command) {
+function sendCmd(command, options = {}) {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     showToast("Not connected to the server", "error");
     return;
   }
-  sendToBackend({ action: "command", command });
+
+  if (!options.quiet) {
+    armTransportRefreshWindow(command);
+  }
+
+  sendToBackend({ action: "command", command, quiet: options.quiet === true });
 }
 
 // ============================================================
@@ -1268,6 +1663,126 @@ function stopWatchdog() {
   }
 }
 
+function syncTransportAutoRefresh(state = deviceState) {
+  if (shouldAutoRefreshTransport(state)) {
+    startTransportAutoRefresh();
+    requestTransportRefresh();
+    return;
+  }
+
+  stopTransportAutoRefresh();
+}
+
+function shouldAutoRefreshTransport(state = deviceState) {
+  const status = String(state.transport_status || "").toUpperCase();
+  const speed = Number.parseInt(state.transport_speed ?? 0, 10);
+  const inTransitionWindow =
+    transportRefreshArmedByCommand && Date.now() < transportTransitionDeadlineMs;
+  const isStopped = status === "STOPPED" && speed === 0;
+
+  if (isStopped && !inTransitionWindow) {
+    transportRefreshArmedByCommand = false;
+    transportTransitionDeadlineMs = 0;
+    return false;
+  }
+
+  if (status === "RECORD") {
+    return true;
+  }
+
+  if (Number.isFinite(speed) && speed !== 0) {
+    return true;
+  }
+
+  return inTransitionWindow;
+}
+
+function startTransportAutoRefresh() {
+  if (transportRefreshIntervalId !== null) {
+    return;
+  }
+
+  transportRefreshIntervalId = setInterval(() => {
+    if (shouldAutoRefreshTransport()) {
+      requestTransportRefresh();
+      return;
+    }
+
+    stopTransportAutoRefresh();
+  }, TRANSPORT_REFRESH_INTERVAL_MS);
+}
+
+function stopTransportAutoRefresh() {
+  if (transportRefreshIntervalId !== null) {
+    clearInterval(transportRefreshIntervalId);
+    transportRefreshIntervalId = null;
+  }
+
+  transportRefreshArmedByCommand = false;
+  transportTransitionDeadlineMs = 0;
+  clearTransportRefreshInFlight();
+}
+
+function requestTransportRefresh() {
+  if (!socket || socket.readyState !== WebSocket.OPEN || transportRefreshInFlight) {
+    return;
+  }
+
+  transportRefreshInFlight = true;
+  clearTimeout(transportRefreshTimeoutId);
+  transportRefreshTimeoutId = setTimeout(() => {
+    transportRefreshInFlight = false;
+    transportRefreshTimeoutId = null;
+  }, TRANSPORT_REFRESH_TIMEOUT_MS);
+
+  sendCmd("transport info", { quiet: true });
+}
+
+function clearTransportRefreshInFlight() {
+  transportRefreshInFlight = false;
+  if (transportRefreshTimeoutId !== null) {
+    clearTimeout(transportRefreshTimeoutId);
+    transportRefreshTimeoutId = null;
+  }
+}
+
+function armTransportRefreshWindow(command) {
+  if (!shouldArmTransportRefreshFromCommand(command)) {
+    return;
+  }
+
+  transportRefreshArmedByCommand = true;
+  transportTransitionDeadlineMs = Date.now() + TRANSPORT_TRANSITION_WINDOW_MS;
+  startTransportAutoRefresh();
+  requestTransportRefresh();
+}
+
+function shouldArmTransportRefreshFromCommand(command) {
+  const normalized = String(command || "").trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const nonTransportCommands = [
+    "ping",
+    "help",
+    "notify",
+    "device info",
+    "remote",
+    "configuration",
+    "commands",
+    "uptime",
+    "identify",
+    "watchdog",
+    "quit",
+    "reboot",
+  ];
+
+  return !nonTransportCommands.some((prefix) =>
+    normalized === prefix || normalized.startsWith(`${prefix}:`)
+  );
+}
+
 // ============================================================
 // SECTION: Tabs
 // ============================================================
@@ -1453,6 +1968,15 @@ function boolEnabledDisabled(value) {
   return "—";
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // ============================================================
 // SECTION: Initialisation
 // ============================================================
@@ -1467,9 +1991,16 @@ function initUI() {
   // Goto hint initialisation
   updateGotoHint();
 
-  // Enter key in host field triggers connect
-  document.getElementById("inputHost")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") uiConnect();
+  document.getElementById("connProfileName")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addConnectionProfileFromForm();
+  });
+
+  document.getElementById("connProfileHost")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addConnectionProfileFromForm();
+  });
+
+  document.getElementById("connProfilePort")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addConnectionProfileFromForm();
   });
 
   // Enter key in raw command field on Advanced tab
@@ -1480,6 +2011,7 @@ function initUI() {
   // Open the WebSocket to the backend immediately on page load.
   // The actual HyperDeck TCP connection is initiated by the user via Connect.
   openWebSocket();
+  loadConnectionProfiles();
 
   consoleLog("HyperDeck Vibe ready. Enter the device IP address and click Connect.", "cl--connect");
 }
