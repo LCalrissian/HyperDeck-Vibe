@@ -47,10 +47,14 @@ Response-code reference (spec §"Successful response codes" and §"Asynchronous 
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
 import os
+import socket
+import sys
+import webbrowser
 import uuid
 from typing import Callable, Optional
 
@@ -671,12 +675,295 @@ async def _prime_device_state() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Portable config & startup helpers
+# ---------------------------------------------------------------------------
+
+_CONFIG_FILENAME = "hyperdeck-vibe.config.json"
+_DEFAULT_PORT = 8080
+_DEFAULT_CONFIG: dict = {
+    "bind_mode": "local",
+    "port": _DEFAULT_PORT,
+    "auto_open_browser": True,
+}
+
+
+def _get_static_dir() -> str:
+    """Return the static/ directory, working in both source and PyInstaller builds."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS  # type: ignore[attr-defined]
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "static")
+
+
+def _is_macos_app_bundle() -> bool:
+    """Return True when running inside a macOS .app bundle (frozen build)."""
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return False
+    exe = os.path.abspath(sys.executable)
+    return any(part.endswith(".app") for part in exe.split(os.sep))
+
+
+def _macos_app_container_dir() -> str:
+    """
+    For macOS .app bundles, return the directory *containing* the .app.
+    e.g. if exe is /Users/foo/Desktop/HyperDeck Vibe.app/Contents/MacOS/HyperDeckVibe
+    this returns /Users/foo/Desktop.
+    """
+    path = os.path.abspath(sys.executable)
+    while path and path != os.sep:
+        path = os.path.dirname(path)
+        if path.endswith(".app"):
+            return os.path.dirname(path)
+    return os.path.dirname(os.path.abspath(sys.executable))
+
+
+def _get_portable_dir() -> str:
+    """
+    Return the preferred 'portable' directory for config storage.
+
+    - macOS .app bundle  →  directory containing the .app (not inside the bundle)
+    - Frozen Windows/Linux  →  directory of sys.executable
+    - Source run  →  directory of this file
+    """
+    if getattr(sys, "frozen", False):
+        if _is_macos_app_bundle():
+            return _macos_app_container_dir()
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _get_os_user_config_dir() -> str:
+    """Return the OS-appropriate user config directory as a fallback."""
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "HyperDeckVibe")
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(appdata, "HyperDeckVibe")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "HyperDeckVibe")
+
+
+def _is_dir_writable(directory: str) -> bool:
+    """Return True if *directory* is writable (creating it first if needed)."""
+    try:
+        os.makedirs(directory, exist_ok=True)
+        test = os.path.join(directory, ".write_test_hdv")
+        with open(test, "w") as fh:
+            fh.write("")
+        os.remove(test)
+        return True
+    except OSError:
+        return False
+
+
+def _resolve_config_path() -> str:
+    """
+    Determine the config file path, preferring the portable location.
+    Falls back to the OS user config dir if the portable location is not writable,
+    printing a clear message to the console.
+    """
+    portable_dir = _get_portable_dir()
+    portable_path = os.path.join(portable_dir, _CONFIG_FILENAME)
+
+    # If config already exists there, use it regardless of write permission
+    if os.path.isfile(portable_path):
+        return portable_path
+
+    # Prefer portable location if writable
+    if _is_dir_writable(portable_dir):
+        return portable_path
+
+    # Fall back to OS user config directory
+    user_dir = _get_os_user_config_dir()
+    user_path = os.path.join(user_dir, _CONFIG_FILENAME)
+    print()
+    print("  NOTE: The app folder is not writable. Config will be saved to:")
+    print(f"        {user_path}")
+    print("  To enable portable mode (config travels with the app), move the app")
+    print("  to a writable folder such as your Desktop or a USB drive.")
+    print()
+    return user_path
+
+
+def _load_config(config_path: str) -> dict:
+    """Load config JSON, filling in defaults for any missing keys."""
+    config = dict(_DEFAULT_CONFIG)
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path) as fh:
+                data = json.load(fh)
+            config.update(data)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"  WARNING: Could not read config ({exc}). Using defaults.")
+    return config
+
+
+def _save_config(config_path: str, config: dict) -> None:
+    """Write the config dict to disk as JSON."""
+    try:
+        parent = os.path.dirname(config_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(config_path, "w") as fh:
+            json.dump(config, fh, indent=2)
+            fh.write("\n")
+    except OSError as exc:
+        print(f"  WARNING: Could not save config ({exc}).")
+
+
+def _run_first_time_setup(config_path: str) -> dict:
+    """Interactive console first-run setup. Returns the saved config dict."""
+    print()
+    print("=" * 60)
+    print("  HyperDeck Vibe — First-run setup")
+    print("=" * 60)
+    print()
+    print("Who should be able to open the controller UI?")
+    print("  1) This computer only (recommended)")
+    print("  2) Other devices on my local network (LAN)")
+    print()
+
+    while True:
+        raw = input("  Choose 1 or 2 [1]: ").strip()
+        if raw in ("", "1"):
+            bind_mode = "local"
+            break
+        if raw == "2":
+            bind_mode = "lan"
+            break
+        print("  Please enter 1 or 2.")
+
+    print()
+    while True:
+        raw = input(f"  Preferred web port [{_DEFAULT_PORT}]: ").strip()
+        if raw == "":
+            port = _DEFAULT_PORT
+            break
+        try:
+            port = int(raw)
+            if 1 <= port <= 65535:
+                break
+            print("  Please enter a port between 1 and 65535.")
+        except ValueError:
+            print("  Please enter a valid port number.")
+
+    print()
+    while True:
+        raw = input("  Open the UI in your browser automatically? (Y/n) [Y]: ").strip().lower()
+        if raw in ("", "y", "yes"):
+            auto_open = True
+            break
+        if raw in ("n", "no"):
+            auto_open = False
+            break
+        print("  Please enter Y or n.")
+
+    config: dict = {"bind_mode": bind_mode, "port": port, "auto_open_browser": auto_open}
+    _save_config(config_path, config)
+    print()
+    print(f"  Settings saved to: {config_path}")
+    print()
+    return config
+
+
+def _is_port_free(host: str, port: int) -> bool:
+    """Return True if *host*:*port* is available to bind.
+
+    Always probes on 127.0.0.1 to avoid binding a transient diagnostic
+    socket to all interfaces. A port in use on any interface will also
+    conflict on loopback on the same machine.
+    """
+    probe_host = "127.0.0.1"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((probe_host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _find_free_port(host: str) -> int:
+    """Find any available port (probes on loopback to avoid binding to all interfaces)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _choose_port(bind_host: str, preferred: int, config_path: str, config: dict) -> int:
+    """
+    Return a port to use, prompting the user if the preferred one is taken.
+    Saves the chosen port back to config if it differs from the preferred.
+    """
+    if _is_port_free(bind_host, preferred):
+        return preferred
+
+    print()
+    print(f"  Port {preferred} is already in use.")
+    while True:
+        free = _find_free_port(bind_host)
+        print(f"  Suggested free port: {free}")
+        raw = input(f"  Use {free} instead? (Y/n) [Y]: ").strip().lower()
+
+        if raw in ("", "y", "yes"):
+            chosen = free
+        elif raw in ("n", "no"):
+            raw2 = input("  Enter a port number (or press Enter to quit): ").strip()
+            if not raw2:
+                print("  Exiting.")
+                sys.exit(0)
+            try:
+                chosen = int(raw2)
+                if not 1 <= chosen <= 65535:
+                    print("  Invalid port number.")
+                    continue
+            except ValueError:
+                print("  Invalid port number.")
+                continue
+        else:
+            continue
+
+        if not _is_port_free(bind_host, chosen):
+            print(f"  Port {chosen} is also in use. Please try again.")
+            continue
+
+        config["port"] = chosen
+        _save_config(config_path, config)
+        print(f"  Config updated with new port: {chosen}")
+        return chosen
+
+
+_DNS_PROBE_HOST = "8.8.8.8"  # used only to find the default outgoing interface; no data sent
+
+
+def _get_lan_ips() -> list[str]:
+    """Best-effort detection of local LAN IP addresses."""
+    ips: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((_DNS_PROBE_HOST, 80))
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                ips.append(ip)
+    except Exception:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in ips and not ip.startswith("127."):
+                ips.append(ip)
+    except Exception:
+        pass
+    return ips
+
+
+# ---------------------------------------------------------------------------
 # FastAPI application
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="HyperDeck Vibe", description="Web controller for Blackmagic HyperDeck")
 
-_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_STATIC_DIR = _get_static_dir()
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
@@ -904,10 +1191,90 @@ async def websocket_handler(websocket: WebSocket) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    # ── CLI argument parsing ───────────────────────────────────────────────
+    parser = argparse.ArgumentParser(
+        description="HyperDeck Vibe — web controller for Blackmagic HyperDeck recorders"
+    )
+    parser.add_argument(
+        "--setup", action="store_true",
+        help="Re-run the first-run setup prompt even if a config file already exists.",
+    )
+    bind_group = parser.add_mutually_exclusive_group()
+    bind_group.add_argument(
+        "--lan", action="store_true",
+        help="Bind to all interfaces (LAN mode) — overrides config.",
+    )
+    bind_group.add_argument(
+        "--local", action="store_true", dest="local",
+        help="Bind to 127.0.0.1 only (local mode) — overrides config.",
+    )
+    parser.add_argument(
+        "--port", type=int, metavar="PORT",
+        help="Web UI port — overrides config.",
+    )
+    parser.add_argument(
+        "--no-browser", action="store_true",
+        help="Do not open the browser automatically — overrides config.",
+    )
+    args = parser.parse_args()
+
+    # ── Config resolution ─────────────────────────────────────────────────
+    config_path = _resolve_config_path()
+    config_exists = os.path.isfile(config_path)
+
+    if args.setup or not config_exists:
+        config = _run_first_time_setup(config_path)
+    else:
+        config = _load_config(config_path)
+
+    # ── Apply CLI overrides ───────────────────────────────────────────────
+    if args.lan:
+        config["bind_mode"] = "lan"
+    elif args.local:
+        config["bind_mode"] = "local"
+    if args.port is not None:
+        config["port"] = args.port
+    if args.no_browser:
+        config["auto_open_browser"] = False
+
+    bind_mode: str = config.get("bind_mode", "local")
+    preferred_port: int = int(config.get("port", _DEFAULT_PORT))
+    auto_open: bool = bool(config.get("auto_open_browser", True))
+
+    # ── Host binding ──────────────────────────────────────────────────────
+    bind_host = "0.0.0.0" if bind_mode == "lan" else "127.0.0.1"
+
+    # ── Port selection with conflict detection ────────────────────────────
+    port = _choose_port(bind_host, preferred_port, config_path, config)
+
+    # ── Print startup URLs ────────────────────────────────────────────────
+    local_url = f"http://127.0.0.1:{port}/"
+    print()
+    print(f"  HyperDeck Vibe starting on {local_url}")
+
+    if bind_mode == "lan":
+        lan_ips = _get_lan_ips()
+        if lan_ips:
+            print("  LAN access enabled — on other devices, open:")
+            for ip in lan_ips:
+                print(f"    http://{ip}:{port}/")
+        else:
+            print("  LAN access enabled — could not detect local IP address.")
+    else:
+        print("  Access is limited to this computer (local mode).")
+        print("  Run with --lan or re-run --setup to enable LAN access.")
+
+    print()
+
+    # ── Open browser ──────────────────────────────────────────────────────
+    if auto_open:
+        webbrowser.open(local_url)
+
+    # ── Start Uvicorn ─────────────────────────────────────────────────────
     uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=8080,
+        app,
+        host=bind_host,
+        port=port,
         reload=False,
         log_level="info",
     )
