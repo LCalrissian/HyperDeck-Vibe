@@ -51,10 +51,11 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from typing import Callable, Optional
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -74,6 +75,65 @@ log = logging.getLogger("hyperdeck-vibe")
 
 HYPERDECK_DEFAULT_PORT: int = 9993
 TCP_READ_TIMEOUT_SECS: float = 0.05   # short poll so cancellation is responsive
+CONNECTIONS_JSON_PATH = os.path.join(os.path.dirname(__file__), "connections.json")
+
+AUTO_NOTIFY_OPTIONS: dict[str, str] = {
+    "transport": "true",
+    "slot": "true",
+    "remote": "true",
+    "configuration": "true",
+    "dropped frames": "true",
+    "display timecode": "true",
+    "timeline position": "true",
+    "playrange": "true",
+    "cache": "true",
+    "dynamic range": "true",
+    "slate": "true",
+    "clips": "true",
+    "disk": "true",
+    "device info": "true",
+    "nas": "true",
+}
+
+REQUIRED_NOTIFY_KEYS: tuple[str, ...] = (
+    "transport",
+    "remote",
+    "display timecode",
+    "timeline position",
+)
+
+_connections_file_lock = asyncio.Lock()
+
+
+def _read_connections_file() -> list[dict]:
+    """Read saved connection profiles from disk, returning an empty list on first run."""
+    if not os.path.exists(CONNECTIONS_JSON_PATH):
+        return []
+
+    try:
+        with open(CONNECTIONS_JSON_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            return data
+    except Exception as exc:
+        log.warning("Failed to read connections JSON: %s", exc)
+    return []
+
+
+def _write_connections_file(entries: list[dict]) -> None:
+    """Persist saved connection profiles to disk."""
+    with open(CONNECTIONS_JSON_PATH, "w", encoding="utf-8") as fh:
+        json.dump(entries, fh, indent=2)
+
+
+def _normalize_port(value: object) -> int:
+    try:
+        port = int(value)
+    except (ValueError, TypeError):
+        port = HYPERDECK_DEFAULT_PORT
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be between 1 and 65535")
+    return port
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +415,40 @@ _broadcaster: WebSocketBroadcaster = WebSocketBroadcaster()
 # Accumulator for multi-line protocol responses
 _response_accumulator: list[str] = []
 _in_multiline_response: bool = False
+_pending_quiet_transport_blocks: int = 0
+_suppress_current_response_event: bool = False
+
+
+def _build_inline_command(command: str, params: dict[str, str]) -> str:
+    """Build a single-line HyperDeck command with ordered key/value pairs."""
+    if not params:
+        return command
+
+    parts = [f"{key}: {value}" for key, value in params.items()]
+    return f"{command}: {' '.join(parts)}"
+
+
+def _is_notify_enabled(kv: dict[str, str], key: str) -> bool:
+    """Return True when a notify key is explicitly enabled."""
+    return kv.get(key, "").strip().lower() == "true"
+
+
+async def _enforce_required_notify_settings(kv: dict[str, str]) -> None:
+    """Re-enable critical notify streams if the deck reports them disabled."""
+    if not _device.connected:
+        return
+
+    needs_reenable = any(not _is_notify_enabled(kv, key) for key in REQUIRED_NOTIFY_KEYS)
+    if not needs_reenable:
+        return
+
+    try:
+        await _device.send(_build_inline_command("notify", AUTO_NOTIFY_OPTIONS))
+        await asyncio.sleep(0.05)
+        await _device.send("notify")
+        log.info("Re-enabled required notify subscriptions")
+    except Exception as exc:
+        log.warning("Failed to re-enable notify subscriptions: %s", exc)
 
 
 async def _on_hyperdeck_line(line: str) -> None:
@@ -367,9 +461,7 @@ async def _on_hyperdeck_line(line: str) -> None:
     3. Parse complete responses and update _state.
     """
     global _response_accumulator, _in_multiline_response
-
-    # Always forward raw protocol lines so the browser console stays live
-    await _broadcaster.broadcast({"type": "raw_line", "line": line})
+    global _pending_quiet_transport_blocks, _suppress_current_response_event
 
     if not _in_multiline_response:
         parts = line.split(" ", 1)
@@ -379,22 +471,45 @@ async def _on_hyperdeck_line(line: str) -> None:
             return  # not a response line
 
         rest = parts[1] if len(parts) > 1 else ""
+        suppress_response_event = code == 208 and _pending_quiet_transport_blocks > 0
+
+        if suppress_response_event:
+            _pending_quiet_transport_blocks -= 1
+
+        if not suppress_response_event:
+            await _broadcaster.broadcast({"type": "raw_line", "line": line})
 
         if rest.endswith(":"):
             # Start of a multi-line block
             _in_multiline_response = True
             _response_accumulator = [line]
+            _suppress_current_response_event = suppress_response_event
         else:
             # Complete single-line response (e.g. "200 ok", "213 deck rebooting")
-            await _handle_complete_response(code, rest, {})
+            await _handle_complete_response(
+                code,
+                rest,
+                {},
+                suppress_response_event=suppress_response_event,
+            )
     else:
+        if not _suppress_current_response_event:
+            await _broadcaster.broadcast({"type": "raw_line", "line": line})
+
         if line == "":
             # Blank line terminates a multi-line block
             code = _parse_response_code(_response_accumulator[0])
+            response_text = "\n".join(_response_accumulator[1:])
             key_values = _parse_key_value_block(_response_accumulator[1:])
             _response_accumulator = []
             _in_multiline_response = False
-            await _handle_complete_response(code, "", key_values)
+            await _handle_complete_response(
+                code,
+                response_text,
+                key_values,
+                suppress_response_event=_suppress_current_response_event,
+            )
+            _suppress_current_response_event = False
         else:
             _response_accumulator.append(line)
 
@@ -422,7 +537,10 @@ def _parse_key_value_block(lines: list[str]) -> dict[str, str]:
 
 
 async def _handle_complete_response(
-    code: int, text: str, kv: dict[str, str]
+    code: int,
+    text: str,
+    kv: dict[str, str],
+    suppress_response_event: bool = False,
 ) -> None:
     """
     Apply a parsed protocol response to _state and notify browsers.
@@ -480,6 +598,10 @@ async def _handle_complete_response(
         _state.remote_override = kv.get("override", "").lower() == "true"
         state_changed = True
 
+    # ── 209 notify settings ───────────────────────────────────────────────
+    elif code == 209:
+        await _enforce_required_notify_settings(kv)
+
     # ── 211 / 511  configuration ──────────────────────────────────────────
     elif code in (211, 511):
         _state.cfg_audio_input          = kv.get("audio input",          _state.cfg_audio_input)
@@ -504,7 +626,9 @@ async def _handle_complete_response(
         _state.cfg_rca_mapping          = kv.get("rca mapping",          _state.cfg_rca_mapping)
         state_changed = True
 
-    # Broadcast the parsed response as a structured event for the browser
+    # Broadcast the parsed response as a structured event for the browser.
+    # Quiet refreshes suppress raw console lines, but the UI still needs the
+    # parsed response signal to clear in-flight state promptly.
     await _broadcaster.broadcast({
         "type":  "response",
         "code":  code,
@@ -527,6 +651,25 @@ async def _on_hyperdeck_disconnect() -> None:
     log.info("HyperDeck disconnected — device state reset")
 
 
+async def _prime_device_state() -> None:
+    """Enable notifications and populate the initial device state for the UI."""
+    init_commands = (
+        _build_inline_command("notify", AUTO_NOTIFY_OPTIONS),
+        "notify",
+        "device info",
+        "transport info",
+        "remote",
+        "configuration",
+    )
+
+    for init_cmd in init_commands:
+        try:
+            await _device.send(init_cmd)
+            await asyncio.sleep(0.05)
+        except Exception as exc:
+            log.warning("Initial command failed (%s): %s", init_cmd, exc)
+
+
 # ---------------------------------------------------------------------------
 # FastAPI application
 # ---------------------------------------------------------------------------
@@ -540,6 +683,107 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 @app.get("/", include_in_schema=False)
 async def serve_index() -> FileResponse:
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
+
+
+@app.get("/api/connections")
+async def get_connections() -> dict:
+    """Return saved connection profiles."""
+    async with _connections_file_lock:
+        return {"connections": _read_connections_file()}
+
+
+@app.post("/api/connections")
+async def create_connection(payload: dict) -> dict:
+    """Create a saved connection profile in JSON storage."""
+    name = str(payload.get("name", "")).strip()
+    host = str(payload.get("host", "")).strip()
+    model = str(payload.get("model", "")).strip()
+    port = _normalize_port(payload.get("port", HYPERDECK_DEFAULT_PORT))
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if not host:
+        raise HTTPException(status_code=400, detail="Host is required")
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "host": host,
+        "port": port,
+        "model": model,
+    }
+
+    async with _connections_file_lock:
+        connections = _read_connections_file()
+        connections.append(entry)
+        _write_connections_file(connections)
+
+    return {"ok": True, "connection": entry}
+
+
+@app.delete("/api/connections/{connection_id}")
+async def delete_connection(connection_id: str) -> dict:
+    """Delete a saved profile by ID."""
+    async with _connections_file_lock:
+        connections = _read_connections_file()
+        updated = [c for c in connections if str(c.get("id", "")) != connection_id]
+        if len(updated) == len(connections):
+            raise HTTPException(status_code=404, detail="Connection not found")
+        _write_connections_file(updated)
+
+    return {"ok": True}
+
+
+@app.put("/api/connections/reorder")
+async def reorder_connections(payload: dict) -> dict:
+    """Persist a new ordering of saved profiles by ID list."""
+    ids = payload.get("ids")
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="ids must be a non-empty list")
+
+    ids = [str(item) for item in ids]
+
+    async with _connections_file_lock:
+        existing = _read_connections_file()
+        by_id = {str(entry.get("id", "")): entry for entry in existing}
+
+        if set(ids) != set(by_id.keys()):
+            raise HTTPException(status_code=400, detail="ids must match current saved entries")
+
+        reordered = [by_id[item_id] for item_id in ids]
+        _write_connections_file(reordered)
+
+    return {"ok": True}
+
+
+@app.patch("/api/connections/model")
+async def update_connection_model(payload: dict) -> dict:
+    """Update model for saved entries matching host/port after successful connect."""
+    host = str(payload.get("host", "")).strip()
+    model = str(payload.get("model", "")).strip()
+    port = _normalize_port(payload.get("port", HYPERDECK_DEFAULT_PORT))
+
+    if not host or not model:
+        raise HTTPException(status_code=400, detail="Host and model are required")
+
+    updated_count = 0
+    async with _connections_file_lock:
+        connections = _read_connections_file()
+        for entry in connections:
+            entry_host = str(entry.get("host", "")).strip()
+            try:
+                entry_port = int(entry.get("port", HYPERDECK_DEFAULT_PORT))
+            except (ValueError, TypeError):
+                entry_port = HYPERDECK_DEFAULT_PORT
+
+            if entry_host == host and entry_port == port:
+                if str(entry.get("model", "")).strip() != model:
+                    entry["model"] = model
+                updated_count += 1
+        if updated_count > 0:
+            _write_connections_file(connections)
+
+    return {"ok": True, "updated": updated_count}
 
 
 @app.websocket("/ws")
@@ -605,13 +849,7 @@ async def websocket_handler(websocket: WebSocket) -> None:
                         {"type": "connected", "host": host, "port": port}
                     )
                     await _broadcaster.broadcast({"type": "state", "state": _state.to_dict()})
-                    # Immediately query key device state so the UI populates
-                    for init_cmd in ("device info", "transport info", "remote", "configuration"):
-                        try:
-                            await _device.send(init_cmd)
-                            await asyncio.sleep(0.05)
-                        except Exception:
-                            pass
+                    await _prime_device_state()
                 except Exception as exc:
                     await _broadcaster.send_to(
                         websocket,
@@ -628,6 +866,7 @@ async def websocket_handler(websocket: WebSocket) -> None:
             # ── Send a HyperDeck command ──────────────────────────────────
             elif action == "command":
                 command = message.get("command", "").strip()
+                quiet = bool(message.get("quiet", False))
                 if not command:
                     continue
                 if not _device.connected:
@@ -637,9 +876,13 @@ async def websocket_handler(websocket: WebSocket) -> None:
                     )
                     continue
                 try:
+                    if quiet and command.lower() == "transport info":
+                        global _pending_quiet_transport_blocks
+                        _pending_quiet_transport_blocks += 1
                     await _device.send(command)
                     # Echo back so the console shows what was sent
-                    await _broadcaster.broadcast({"type": "sent", "line": command})
+                    if not quiet:
+                        await _broadcaster.broadcast({"type": "sent", "line": command})
                 except Exception as exc:
                     await _broadcaster.send_to(
                         websocket,

@@ -16,7 +16,7 @@
     <span class="logo-icon">▶</span>
     <span class="logo-text">HyperDeck <em>Vibe</em></span>
   </div>
-  <div class="topbar__status">
+  <div class="topbar__status" id="topbarStatus" onclick="onTopbarStatusClick(event)">
     <span class="dot dot--off" id="statusDot"></span>
     <span id="statusText">Disconnected</span>
   </div>
@@ -29,27 +29,10 @@
      ═══════════════════════════════════════════════════════════ -->
 <aside class="sidebar">
 
-  <!-- ── Connection ─────────────────────────────────────────── -->
-  <section class="card">
-    <h2 class="card__title">Connection</h2>
-    <div class="field-row">
-      <label for="inputHost">Host / IP</label>
-      <input id="inputHost" type="text" placeholder="192.168.1.100" autocomplete="off" />
-    </div>
-    <div class="field-row">
-      <label for="inputPort">Port</label>
-      <input id="inputPort" type="number" value="9993" min="1" max="65535" />
-    </div>
-    <div class="btn-row" style="margin-top:var(--sp-sm)">
-      <button class="btn btn--primary" id="btnConnect" onclick="uiConnect()">Connect</button>
-      <button class="btn btn--danger"  id="btnDisconnect" onclick="uiDisconnect()" disabled>Disconnect</button>
-    </div>
-  </section>
-
   <!-- ── Live timecode display ──────────────────────────────── -->
   <section class="card">
     <h2 class="card__title">Display Timecode</h2>
-    <div class="timecode-display" id="sidebarTimecode">--:--:--:--</div>
+    <div class="timecode-display" id="sidebarTimecode" onclick="onSidebarTimecodeClick(event)">--:--:--:--</div>
   </section>
 
   <!-- ── Transport status ───────────────────────────────────── -->
@@ -113,10 +96,9 @@
     <button class="tab" data-tab="clips">Clips</button>
     <button class="tab" data-tab="slots">Slots&nbsp;/&nbsp;Disk</button>
     <button class="tab" data-tab="config">Configuration</button>
-    <button class="tab" data-tab="notify">Notifications</button>
-    <button class="tab" data-tab="dynrange">Dyn&nbsp;Range</button>
     <button class="tab" data-tab="slate">Slate</button>
     <button class="tab" data-tab="nas">NAS</button>
+    <button class="tab" id="connectionsTabBtn" data-tab="connections">Connections</button>
     <button class="tab" data-tab="advanced">Advanced</button>
     <button class="tab" data-tab="console">Console</button>
   </nav>
@@ -229,22 +211,14 @@
     <div class="card">
       <h2 class="card__title">Remote Control &amp; Troubleshooting</h2>
       <div class="dash-grid">
-        <div class="dash-cell"><div class="dash-cell__label">Remote Enabled</div>
-          <div class="dash-cell__value" id="dashRemEnabled">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Override Active</div>
-          <div class="dash-cell__value" id="dashRemOverride">—</div></div>
+        <button class="dash-state-btn state-disabled" id="dashRemoteToggleBtn" onclick="toggleDashboardRemote()">Remote Disabled</button>
+        <button class="dash-state-btn state-disabled" id="dashOverrideToggleBtn" onclick="toggleDashboardOverride()">Override Disabled</button>
       </div>
       <p class="hint" style="margin-top:var(--sp-sm)">
         If commands return <strong>111 remote control disabled</strong>, use
         <em>remote: override: true</em> on the Advanced tab, or enable remote
         on the HyperDeck front panel.
       </p>
-      <div class="btn-row" style="margin-top:var(--sp-sm)">
-        <button class="btn btn--sm" onclick="sendCmd('remote: enable: true')">Enable Remote</button>
-        <button class="btn btn--sm" onclick="sendCmd('remote: override: true')">Override ON</button>
-        <button class="btn btn--sm btn--danger" onclick="sendCmd('remote: override: false')">Override OFF</button>
-      </div>
-
       <hr class="divider" />
       <p class="hint">Common error codes:</p>
       <div style="font-size:.78em;color:var(--text-secondary);line-height:2">
@@ -274,6 +248,42 @@
     </div>
 
   </div><!-- /tab-dashboard -->
+
+  <!-- ═══════════════════════════════════════════════════════
+       CONNECTIONS  – saved HyperDeck targets for quick recall
+       ═══════════════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-connections">
+    <div class="card" style="grid-column:1/-1">
+      <h2 class="card__title">New Connection</h2>
+      <p class="hint">
+        Save a friendly name with Host/IP and Port. Click any entry to populate the Connection card on the left.
+        Model is auto-filled after a successful connection.
+      </p>
+
+      <div class="conn-entry-row" style="margin-top:var(--sp-sm)">
+        <div class="conn-entry-field conn-entry-field--name">
+          <label for="connProfileName">Name</label>
+          <input id="connProfileName" type="text" placeholder="Studio A HyperDeck" autocomplete="off" />
+        </div>
+        <div class="conn-entry-field conn-entry-field--host">
+          <label for="connProfileHost">IP / Host</label>
+          <input id="connProfileHost" type="text" placeholder="192.168.1.100" autocomplete="off" />
+        </div>
+        <div class="conn-entry-field conn-entry-field--port">
+          <label for="connProfilePort">Port</label>
+          <input id="connProfilePort" type="number" value="9993" min="1" max="65535" />
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin-bottom:var(--sp-sm)">
+        <button class="btn btn--primary" onclick="addConnectionProfileFromForm()">Save Connection</button>
+      </div>
+
+      <h2 class="card__title" style="margin-top:var(--sp-sm)">Saved Connections</h2>
+
+      <div id="savedConnectionsList" class="saved-connections-list"></div>
+    </div>
+  </div><!-- /tab-connections -->
 
   <!-- ═══════════════════════════════════════════════════════
        TRANSPORT  – play, stop, record, jog, shuttle, goto,
@@ -1000,93 +1010,7 @@
       <button class="btn btn--primary btn--sm" onclick="applyAuthenticate()">Authenticate</button>
     </div>
 
-  </div><!-- /tab-config -->
-
-  <!-- ═══════════════════════════════════════════════════════
-       NOTIFICATIONS  – all notify subscriptions
-       Response: 209 notify: (query)  |  Async: 5xx with matching data
-       ═══════════════════════════════════════════════════════ -->
-  <div class="tab-panel" id="tab-notify">
-    <div class="card" style="grid-column:1/-1">
-      <div class="card__title-row">
-        <h2 class="card__title">Asynchronous Notifications</h2>
-        <button class="btn btn--sm" onclick="sendCmd('notify')">↻ Query All</button>
-      </div>
-      <p class="hint">
-        When enabled, the device sends asynchronous 5xx messages whenever the subscribed state changes.
-        These appear in the Console and update the UI automatically.
-      </p>
-      <div class="field-grid">
-        <div class="field-row">
-          <label for="notTransport">transport (508)</label>
-          <label class="toggle"><input type="checkbox" id="notTransport" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notSlot">slot (502)</label>
-          <label class="toggle"><input type="checkbox" id="notSlot" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notRemote">remote (510)</label>
-          <label class="toggle"><input type="checkbox" id="notRemote" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notConfiguration">configuration (511)</label>
-          <label class="toggle"><input type="checkbox" id="notConfiguration" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notDroppedFrames">dropped frames</label>
-          <label class="toggle"><input type="checkbox" id="notDroppedFrames" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notDisplayTimecode">display timecode</label>
-          <label class="toggle"><input type="checkbox" id="notDisplayTimecode" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notTimelinePosition">timeline position</label>
-          <label class="toggle"><input type="checkbox" id="notTimelinePosition" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notPlayrange">playrange</label>
-          <label class="toggle"><input type="checkbox" id="notPlayrange" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notCache">cache</label>
-          <label class="toggle"><input type="checkbox" id="notCache" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notDynamicRange">dynamic range</label>
-          <label class="toggle"><input type="checkbox" id="notDynamicRange" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notSlate">slate</label>
-          <label class="toggle"><input type="checkbox" id="notSlate" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notClips">clips (519)</label>
-          <label class="toggle"><input type="checkbox" id="notClips" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notDisk">disk (520)</label>
-          <label class="toggle"><input type="checkbox" id="notDisk" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notDeviceInfo">device info</label>
-          <label class="toggle"><input type="checkbox" id="notDeviceInfo" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="notNas">nas</label>
-          <label class="toggle"><input type="checkbox" id="notNas" /><span class="slider"></span></label>
-        </div>
-      </div>
-      <button class="btn btn--primary" onclick="applyNotifications()">Apply Notifications</button>
-    </div>
-  </div><!-- /tab-notify -->
-
-  <!-- ═══════════════════════════════════════════════════════
-       DYNAMIC RANGE  – HDR/SDR conversion overrides
-       Query: dynamic range  |  Response: (code varies by firmware)
-       ═══════════════════════════════════════════════════════ -->
-  <div class="tab-panel" id="tab-dynrange">
+    <!-- Dynamic Range Overrides -->
     <div class="card">
       <h2 class="card__title">Dynamic Range Overrides</h2>
       <p class="hint">
@@ -1122,7 +1046,10 @@
         <button class="btn btn--sm" onclick="sendCmd('dynamic range')">↻ Query</button>
       </div>
     </div>
-  </div><!-- /tab-dynrange -->
+
+  </div><!-- /tab-config -->
+
+
 
   <!-- ═══════════════════════════════════════════════════════
        SLATE  – metadata: clips, project, lens  (multiline only)
