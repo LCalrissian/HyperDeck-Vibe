@@ -2,14 +2,14 @@
  * HyperDeck Vibe — Browser-side JavaScript
  *
  * Responsibilities:
- *  • Maintain the WebSocket connection to the backend (app.py)
+ *  • Maintain the WebSocket connection to the backend (server.js)
  *  • Send HyperDeck commands via { action: "command", command: "…" } messages
  *  • Parse every incoming response and update the UI state model
  *  • Drive every UI widget described in index.html
  *
  * Protocol reference: Blackmagic HyperDeck Ethernet Protocol (December 2024)
  *
- * Response code summary (see app.py for full table):
+ * Response code summary (see backend for full table):
  *   200 ok | 201 help | 202 slot info | 204 device info | 205 clips info
  *   206 disk list | 208 transport info | 209 notify | 210 remote info
  *   211 configuration | 212 commands | 213 deck rebooting | 214 clips count
