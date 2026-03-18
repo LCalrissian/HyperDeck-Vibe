@@ -21,10 +21,10 @@ Built against the **Blackmagic HyperDeck Ethernet Protocol — December 2024** s
 ## Architecture
 
 ```
-Browser ←─── WebSocket ──── FastAPI (app.py) ←─── TCP 9993 ──── HyperDeck
+Browser ←─── WebSocket ──── Node.js (server.js) ←─── TCP 9993 ──── HyperDeck
 ```
 
-- `app.py` — FastAPI backend; maintains the TCP connection to the HyperDeck,
+- `server.js` — Node.js backend; maintains the TCP connection to the HyperDeck,
   parses every response line-by-line, updates a server-side device state model,
   and broadcasts typed JSON messages to all connected browser WebSocket clients.
 - `static/index.html` — single-page application structure
@@ -33,135 +33,71 @@ Browser ←─── WebSocket ──── FastAPI (app.py) ←─── TCP 99
 
 ## Requirements
 
-- Python 3.10+
+- Node.js 18+
 - HyperDeck device on the same network with remote control enabled
 
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
-python app.py
+npm install
+npm start
 ```
 
-On first run you will be prompted to configure the app (see [First-run setup](#first-run-setup)). After that the browser opens automatically to the controller UI.
+The backend now persists local settings in `connections.json`:
+
+- `server.bind_host` and `server.port` for the Node server bind address/port
+- `connections[]` for saved HyperDeck devices (name, host, port, model)
+
+This file is read on startup and kept across launches.
 
 1. Enter the HyperDeck IP address and click **Connect**.
 2. If you see error `111 remote control disabled`, click **Enable Remote** on the Dashboard
    or the Remote Control section in the Configuration tab.
 3. Use any of the tabs to send commands and monitor device state.
 
-## First-run setup
 
-When `hyperdeck-vibe.config.json` is not found, the app runs an interactive console wizard:
+## Persistent Config
 
-```
-HyperDeck Vibe — First-run setup
-==================================================
+`connections.json` is now the single local persistence file for:
 
-Who should be able to open the controller UI?
-  1) This computer only (recommended)
-  2) Other devices on my local network (LAN)
+- Server binding: `server.bind_host` (`127.0.0.1` or `0.0.0.0`, or another host)
+- Server port: `server.port`
+- Saved HyperDeck device profiles: `connections[]`
 
-  Choose 1 or 2 [1]:
-  Preferred web port [8080]:
-  Open the UI in your browser automatically? (Y/n) [Y]:
-```
+The backend reads this file on startup and writes updates via API calls, so your settings survive across launches.
 
-Answers are saved to `hyperdeck-vibe.config.json` (see [Portable config](#portable-config)).
-To re-run the wizard at any time, pass `--setup`:
-
-```bash
-python app.py --setup
-```
-
-## Portable config
-
-Settings are stored in `hyperdeck-vibe.config.json` alongside the application so the whole
-folder can be copied to another machine and it will start with the same settings.
-
-| Platform | Portable location | Fallback location (if portable folder is not writable) |
-|----------|-------------------|--------------------------------------------------------|
-| Windows / Linux | Same folder as the executable | `%APPDATA%\HyperDeckVibe\` / `~/.config/HyperDeckVibe/` |
-| macOS (`.app` bundle) | Folder **containing** the `.app` | `~/Library/Application Support/HyperDeckVibe/` |
-| Source (`python app.py`) | Same folder as `app.py` | (same OS fallbacks as above) |
-
-When the app cannot write to the portable location (e.g. the `.app` is in `/Applications`, or
-the exe is in `Program Files`) it falls back automatically and prints a message explaining
-where config was saved and how to restore portable behaviour.
-
-Example fallback message:
-
-```
-  NOTE: The app folder is not writable. Config will be saved to:
-        /Users/alice/Library/Application Support/HyperDeckVibe/hyperdeck-vibe.config.json
-  To enable portable mode (config travels with the app), move the app
-  to a writable folder such as your Desktop or a USB drive.
-```
-
-### Config file format
+### File format
 
 ```json
 {
-  "bind_mode": "local",
-  "port": 8080,
-  "auto_open_browser": true
+  "server": {
+    "bind_host": "0.0.0.0",
+    "port": 8080
+  },
+  "connections": [
+    {
+      "id": "uuid",
+      "name": "Studio Deck",
+      "host": "192.168.1.50",
+      "port": 9993,
+      "model": "HyperDeck Studio"
+    }
+  ]
 }
 ```
 
-Edit the file directly to change settings, or pass `--setup` to re-run the wizard.
+### Backward compatibility
 
-## Local-only vs LAN mode
+If `connections.json` contains the older list-only format, the Node backend auto-upgrades it to the new object shape the next time the server starts.
 
-| Mode | Uvicorn binds to | Who can access the UI |
-|------|------------------|-----------------------|
-| `local` (default) | `127.0.0.1` | Only the computer running the app |
-| `lan` | `0.0.0.0` | Any device on the same local network |
+### Updating server bind/port
 
-In **LAN mode** the app prints the reachable URLs for other devices:
+You can edit `connections.json` directly or call:
 
-```
-  HyperDeck Vibe starting on http://127.0.0.1:8080/
-  LAN access enabled — on other devices, open:
-    http://192.168.1.50:8080/
-```
+- `GET /api/settings`
+- `PATCH /api/settings/server`
 
-The local browser always opens `http://127.0.0.1:<port>/` regardless of mode.
-
-> **Security note:** LAN mode exposes the controller to any device on the same Wi-Fi or
-> Ethernet segment. Use it only on trusted networks.
-
-## CLI flags
-
-| Flag | Description |
-|------|-------------|
-| `--setup` | Re-run the first-run setup wizard (re-prompts all questions and saves new config). |
-| `--lan` | Force LAN mode for this run (overrides config). |
-| `--local` | Force local-only mode for this run (overrides config). |
-| `--port PORT` | Use the specified port (overrides config). |
-| `--no-browser` | Do not open the browser automatically (overrides config). |
-
-Examples:
-
-```bash
-# Re-run setup to change bind mode or port
-python app.py --setup
-
-# Start in LAN mode on port 9000 without opening the browser
-python app.py --lan --port 9000 --no-browser
-```
-
-## Port conflict handling
-
-If the configured port is already in use, the app finds a free port and prompts you:
-
-```
-  Port 8080 is already in use.
-  Suggested free port: 51327
-  Use 51327 instead? (Y/n) [Y]:
-```
-
-Accepting updates the config file so the next launch uses the new port automatically.
-If you decline, you can enter any port number or press Enter to quit.
+`PATCH /api/settings/server` returns `restart_required: true` when settings change.
 
 ## Protocol notes
 
@@ -175,3 +111,19 @@ If you decline, you can enter any port number or press Enter to quit.
 ## License
 
 MIT
+
+## Native WebView Packaging
+
+If you want a desktop app shell that uses the host OS native webview instead of bundling Chromium, the recommended option is **Tauri**.
+
+- Windows: WebView2
+- macOS: WKWebView
+- Linux: WebKitGTK
+
+For this project, the practical approach is:
+
+1. Keep `server.js` as the HyperDeck TCP/WebSocket bridge.
+2. Run it as a sidecar process from a Tauri desktop wrapper.
+3. Load the existing `static/index.html` UI in the Tauri webview.
+
+This gives you a lightweight, cross-platform desktop package while preserving the current web UI.

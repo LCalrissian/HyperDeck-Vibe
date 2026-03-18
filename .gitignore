@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 nohup.out
 connections.json
+node_modules/
