@@ -20,8 +20,8 @@ const AUTO_NOTIFY_OPTIONS = {
   "remote": "true",
   "configuration": "true",
   "dropped frames": "true",
-  "display timecode": "true",
-  "timeline position": "true",
+  "display timecode": "false",
+  "timeline position": "false",
   "playrange": "true",
   "cache": "true",
   "dynamic range": "true",
@@ -35,8 +35,6 @@ const AUTO_NOTIFY_OPTIONS = {
 const REQUIRED_NOTIFY_KEYS = [
   "transport",
   "remote",
-  "display timecode",
-  "timeline position",
 ];
 
 const DEFAULT_APP_CONFIG = {
@@ -406,6 +404,44 @@ function parseKeyValueBlock(lines) {
   return result;
 }
 
+function normalizeTransportStatus(rawStatus, speed, fallbackStatus = "") {
+  const candidate = String(rawStatus || fallbackStatus || "").trim().toLowerCase();
+  const normalizedSpeed = Number.isInteger(speed) ? speed : null;
+
+  if (!candidate) {
+    return "";
+  }
+
+  // Protocol defines preview as a distinct transport state.
+  if (candidate === "preview") {
+    return "preview";
+  }
+
+  // Expose deck-style directional transport states when max-speed shuttle is used.
+  if (["shuttle", "forward", "rewind"].includes(candidate) && normalizedSpeed === 5000) {
+    return "forward";
+  }
+  if (["shuttle", "forward", "rewind"].includes(candidate) && normalizedSpeed === -5000) {
+    return "rewind";
+  }
+
+  // Some decks continue reporting shuttle when normal-speed playback is requested.
+  if (candidate === "shuttle" && normalizedSpeed === 100) {
+    return "play";
+  }
+
+  // Some decks report shuttle/transport motion state with speed 0 at timeline edges.
+  // Normalize those impossible combinations back to stopped for UI consistency.
+  if (
+    normalizedSpeed === 0 &&
+    ["play", "forward", "rewind", "jog", "shuttle"].includes(candidate)
+  ) {
+    return "stopped";
+  }
+
+  return candidate;
+}
+
 function isNotifyEnabled(kv, key) {
   return String(kv[key] || "").trim().toLowerCase() === "true";
 }
@@ -449,7 +485,6 @@ async function handleCompleteResponse(code, text, kv) {
     }
     stateChanged = true;
   } else if (code === 208 || code === 508) {
-    state.transport_status = kv["status"] || state.transport_status;
     state.transport_slot_id = kv["slot id"] || state.transport_slot_id;
     state.transport_slot_name = kv["slot name"] || state.transport_slot_name;
     state.transport_device_name = kv["device name"] || state.transport_device_name;
@@ -460,12 +495,26 @@ async function handleCompleteResponse(code, text, kv) {
     state.transport_input_video_format = kv["input video format"] || state.transport_input_video_format;
     state.transport_timeline = kv["timeline"] || state.transport_timeline;
     state.transport_dynamic_range = kv["dynamic range"] || state.transport_dynamic_range;
-    state.transport_loop = String(kv["loop"] || "").toLowerCase() === "true";
-    state.transport_single_clip = String(kv["single clip"] || "").toLowerCase() === "true";
-    state.transport_reference_locked = String(kv["reference locked"] || "").toLowerCase() === "true";
+    if (kv["loop"] !== undefined) {
+      state.transport_loop = String(kv["loop"]).toLowerCase() === "true";
+    }
+    if (kv["single clip"] !== undefined) {
+      state.transport_single_clip = String(kv["single clip"]).toLowerCase() === "true";
+    }
+    if (kv["reference locked"] !== undefined) {
+      state.transport_reference_locked = String(kv["reference locked"]).toLowerCase() === "true";
+    }
     const maybeSpeed = Number(kv["speed"]);
+    const nextTransportSpeed = Number.isInteger(maybeSpeed) ? maybeSpeed : state.transport_speed;
     if (Number.isInteger(maybeSpeed)) {
       state.transport_speed = maybeSpeed;
+    }
+    if (kv["status"] !== undefined || Number.isInteger(maybeSpeed)) {
+      state.transport_status = normalizeTransportStatus(
+        kv["status"],
+        nextTransportSpeed,
+        state.transport_status,
+      );
     }
     stateChanged = true;
   } else if (code === 210 || code === 510) {

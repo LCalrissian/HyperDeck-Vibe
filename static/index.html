@@ -13,7 +13,6 @@
      ═══════════════════════════════════════════════════════════ -->
 <header class="topbar">
   <div class="topbar__logo">
-    <span class="logo-icon">▶</span>
     <span class="logo-text">HyperDeck <em>Vibe</em></span>
   </div>
   <div class="topbar__status" id="topbarStatus" onclick="onTopbarStatusClick(event)">
@@ -28,58 +27,31 @@
      LEFT SIDEBAR  (connection + live transport status)
      ═══════════════════════════════════════════════════════════ -->
 <aside class="sidebar">
-
-  <!-- ── Live timecode display ──────────────────────────────── -->
   <section class="card">
-    <h2 class="card__title">Display Timecode</h2>
+    <h2 class="card__title" style="text-align:center;margin-bottom:4px">Dashboard</h2>
     <div class="timecode-display" id="sidebarTimecode" onclick="onSidebarTimecodeClick(event)">--:--:--:--</div>
-  </section>
 
-  <!-- ── Transport status ───────────────────────────────────── -->
-  <section class="card">
-    <div class="card__title-row">
-      <h2 class="card__title">Transport</h2>
-      <button class="btn btn--xs" onclick="sendCmd('transport info')">↻</button>
+    <div class="sidebar-status-grid">
+      <div class="sidebar-status-item"><span class="info-label">Status</span><span class="status-badge" id="tsStatus">—</span></div>
+      <div class="sidebar-status-item sidebar-status-item--right sidebar-status-item--clickable" onclick="onSidebarRemoteIndicatorClick(event)"><span class="sidebar-dot-label">Remote</span><span class="dot dot--off" id="sidebarDotRemote"></span></div>
+      <div class="sidebar-status-item"><span class="info-label">Format</span><span class="status-badge stopped" id="tsFormat">—</span></div>
+      <div class="sidebar-status-item sidebar-status-item--right"><span class="sidebar-dot-label">Ref&nbsp;Lock</span><span class="dot dot--off" id="sidebarDotRefLock"></span></div>
     </div>
-    <table class="info-table">
-      <tr><td>Status</td>  <td><span class="status-badge" id="tsStatus">—</span></td></tr>
-      <tr><td>Timecode</td><td id="tsTimecode" class="mono">—</td></tr>
-      <tr><td>Speed</td>   <td id="tsSpeed">—</td></tr>
-      <tr><td>Clip ID</td> <td id="tsClipId">—</td></tr>
-      <tr><td>Slot</td>    <td id="tsSlot">—</td></tr>
-      <tr><td>Format</td>  <td id="tsFormat">—</td></tr>
-      <tr><td>Loop</td>    <td id="tsLoop">—</td></tr>
-      <tr><td>Timeline</td><td id="tsTimeline">—</td></tr>
-      <tr><td>Dyn Range</td><td id="tsDynRange">—</td></tr>
-      <tr><td>Ref Lock</td><td id="tsRefLocked">—</td></tr>
-    </table>
-  </section>
 
-  <!-- ── Device info summary ────────────────────────────────── -->
-  <section class="card">
-    <div class="card__title-row">
+    <div id="sidebarDeviceSection" style="display:none">
+      <hr class="divider" />
+
       <h2 class="card__title">Device</h2>
-      <button class="btn btn--xs" onclick="sendCmd('device info')">↻</button>
+      <table class="info-table">
+        <tr><td id="devNameLabel">Name</td> <td id="devNameValue">—</td></tr>
+        <tr><td>Model</td>    <td id="devModel">—</td></tr>
+        <tr><td>SW Ver</td>   <td id="devSwVer">—</td></tr>
+        <tr><td>Protocol</td> <td id="devProto">—</td></tr>
+        <tr><td>Slots</td>    <td id="devSlots">—</td></tr>
+        <tr><td>Unique ID</td><td id="devId" style="font-size:.75em;word-break:break-all">—</td></tr>
+      </table>
     </div>
-    <table class="info-table">
-      <tr><td>Model</td>    <td id="devModel">—</td></tr>
-      <tr><td>SW Ver</td>   <td id="devSwVer">—</td></tr>
-      <tr><td>Protocol</td> <td id="devProto">—</td></tr>
-      <tr><td>Slots</td>    <td id="devSlots">—</td></tr>
-      <tr><td>Unique ID</td><td id="devId" style="font-size:.75em;word-break:break-all">—</td></tr>
-    </table>
-  </section>
 
-  <!-- ── Remote control state ───────────────────────────────── -->
-  <section class="card">
-    <div class="card__title-row">
-      <h2 class="card__title">Remote</h2>
-      <button class="btn btn--xs" onclick="sendCmd('remote')">↻</button>
-    </div>
-    <table class="info-table">
-      <tr><td>Enabled</td> <td id="remEnabled">—</td></tr>
-      <tr><td>Override</td><td id="remOverride">—</td></tr>
-    </table>
   </section>
 
 </aside><!-- /sidebar -->
@@ -91,77 +63,22 @@
 
   <!-- Tab navigation -->
   <nav class="tabs" id="tabNav">
-    <button class="tab active" data-tab="dashboard">Dashboard</button>
-    <button class="tab" data-tab="transport">Transport</button>
+    <button class="tab active" data-tab="transport">Transport</button>
     <button class="tab" data-tab="clips">Clips</button>
     <button class="tab" data-tab="slots">Slots&nbsp;/&nbsp;Disk</button>
     <button class="tab" data-tab="config">Configuration</button>
     <button class="tab" data-tab="slate">Slate</button>
     <button class="tab" data-tab="nas">NAS</button>
+    <button class="tab" data-tab="device">Device</button>
     <button class="tab" id="connectionsTabBtn" data-tab="connections">Connections</button>
     <button class="tab" data-tab="advanced">Advanced</button>
     <button class="tab" data-tab="console">Console</button>
   </nav>
 
   <!-- ═══════════════════════════════════════════════════════
-       DASHBOARD  – full device state at a glance
+       DEVICE  – dedicated device details
        ═══════════════════════════════════════════════════════ -->
-  <div class="tab-panel active" id="tab-dashboard">
-
-    <!-- Timecode hero -->
-    <div class="card" style="grid-column:1/-1">
-      <div class="card__title-row">
-        <h2 class="card__title">Live Display Timecode</h2>
-        <button class="btn btn--xs" onclick="sendCmd('transport info')">↻ Refresh</button>
-      </div>
-      <div class="timecode-display" id="dashTimecode">--:--:--:--</div>
-      <div style="text-align:center;font-size:.8em;color:var(--text-secondary);margin-top:4px">
-        Timeline&nbsp;TC:&nbsp;<span id="dashTlTimecode" class="mono">—</span>
-        &nbsp;·&nbsp; Input:&nbsp;<span id="dashInputFmt">—</span>
-      </div>
-    </div>
-
-    <!-- Transport state -->
-    <div class="card">
-      <h2 class="card__title">Transport State</h2>
-      <div class="dash-grid">
-        <div class="dash-cell"><div class="dash-cell__label">Status</div>
-          <div class="dash-cell__value"><span class="status-badge" id="dashStatus">—</span></div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Speed</div>
-          <div class="dash-cell__value" id="dashSpeed">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Clip ID</div>
-          <div class="dash-cell__value" id="dashClipId">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Slot ID</div>
-          <div class="dash-cell__value" id="dashSlotId">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Slot Name</div>
-          <div class="dash-cell__value" id="dashSlotName">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Device Name</div>
-          <div class="dash-cell__value" id="dashDevName">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Video Format</div>
-          <div class="dash-cell__value" id="dashVidFmt">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Loop</div>
-          <div class="dash-cell__value" id="dashLoop">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Single Clip</div>
-          <div class="dash-cell__value" id="dashSingleClip">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Timeline</div>
-          <div class="dash-cell__value" id="dashTimeline">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Dynamic Range</div>
-          <div class="dash-cell__value" id="dashDynRange">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Ref Locked</div>
-          <div class="dash-cell__value" id="dashRefLocked">—</div></div>
-      </div>
-      <!-- Quick transport controls in dashboard -->
-      <div class="transport-btns" style="margin-bottom:0">
-        <button class="tbtn" onclick="sendCmd('goto: timeline: start')" title="Timeline start">⏮</button>
-        <button class="tbtn" onclick="sendCmd('goto: clip id: -1')"    title="Prev clip">⏪</button>
-        <button class="tbtn tbtn--stop"   onclick="sendCmd('stop')"    title="Stop">⏹</button>
-        <button class="tbtn tbtn--play"   onclick="quickPlay()"        title="Play">⏵</button>
-        <button class="tbtn tbtn--record" onclick="quickRecord()"      title="Record">⏺</button>
-        <button class="tbtn" onclick="sendCmd('goto: clip id: +1')"    title="Next clip">⏩</button>
-        <button class="tbtn" onclick="sendCmd('goto: timeline: end')"  title="Timeline end">⏭</button>
-      </div>
-    </div>
-
+  <div class="tab-panel" id="tab-device">
     <!-- Device info -->
     <div class="card">
       <h2 class="card__title">Device Information</h2>
@@ -246,8 +163,7 @@
         <strong>163</strong> parameterized single line command not supported
       </div>
     </div>
-
-  </div><!-- /tab-dashboard -->
+  </div><!-- /tab-device -->
 
   <!-- ═══════════════════════════════════════════════════════
        CONNECTIONS  – saved HyperDeck targets for quick recall
@@ -276,6 +192,7 @@
       </div>
 
       <div class="btn-row" style="margin-bottom:var(--sp-sm)">
+        <button class="btn" onclick="uiConnect()">Connect</button>
         <button class="btn btn--primary" onclick="addConnectionProfileFromForm()">Save Connection</button>
       </div>
 
@@ -289,54 +206,62 @@
        TRANSPORT  – play, stop, record, jog, shuttle, goto,
                     playrange, play on startup, play option, preview
        ═══════════════════════════════════════════════════════ -->
-  <div class="tab-panel" id="tab-transport">
+  <div class="tab-panel active" id="tab-transport">
 
     <!-- Play -->
     <div class="card">
       <h2 class="card__title">Playback</h2>
       <div class="transport-btns">
-        <button class="tbtn" onclick="sendCmd('goto: timeline: start')" title="Go to timeline start">⏮</button>
-        <button class="tbtn" onclick="sendCmd('goto: clip id: -1')" title="Previous clip">⏪</button>
+        <button class="tbtn" onclick="sendCmd('goto: clip id: -1')" title="Previous clip">⏮</button>
+        <button class="tbtn tbtn--clip-nav" id="transportRewindBtn" onclick="sendCmd('shuttle: speed: -5000')" title="Rewind">◀◀</button>
         <button class="tbtn tbtn--stop"   onclick="sendCmd('stop')"   title="Stop">⏹</button>
-        <button class="tbtn tbtn--play"   onclick="applyPlay()"       title="Play">⏵</button>
-        <button class="tbtn tbtn--record" onclick="applyRecord()"     title="Record">⏺</button>
-        <button class="tbtn" onclick="sendCmd('goto: clip id: +1')"   title="Next clip">⏩</button>
-        <button class="tbtn" onclick="sendCmd('goto: timeline: end')" title="Go to timeline end">⏭</button>
+        <button class="tbtn tbtn--play"   id="transportPlayBtn" onclick="applyPlay()"       title="Play">⏵</button>
+        <button class="tbtn tbtn--record" id="transportRecordBtn" onclick="applyRecord()"     title="Record">⏺</button>
+        <button class="tbtn tbtn--clip-nav" id="transportForwardBtn" onclick="sendCmd('shuttle: speed: 5000')"   title="Fast Forward">▶▶</button>
+        <button class="tbtn" onclick="sendCmd('goto: clip id: +1')" title="Next clip">⏭</button>
       </div>
 
       <div class="field-grid">
-        <div class="field-row">
-          <label for="playSpeed">Speed (%)</label>
-          <input id="playSpeed" type="number" value="100" min="-5000" max="5000"
-                 title="Play speed: -5000 to 5000. 100 = normal." />
-        </div>
-        <div class="field-row">
-          <label for="playClipId">Clip ID</label>
-          <input id="playClipId" type="number" min="1" placeholder="optional"
-                 title="Start play from this clip ID" />
-        </div>
-        <div class="field-row">
+        <div class="field-row span-2 playback-toggle-row">
           <label for="playLoop">Loop</label>
           <label class="toggle"><input type="checkbox" id="playLoop" /><span class="slider"></span></label>
         </div>
-        <div class="field-row">
+        <div class="field-row span-2 playback-toggle-row">
           <label for="playSingleClip">Single Clip</label>
           <label class="toggle"><input type="checkbox" id="playSingleClip" /><span class="slider"></span></label>
         </div>
-        <div class="field-row span-2">
-          <label for="playTimecodeOffset">TC Offset</label>
-          <input id="playTimecodeOffset" type="text" placeholder="+00:00:00:00 (with clip id)" class="mono"
-                 title="Optional timecode offset from the start of the chosen clip" />
-        </div>
       </div>
-      <button class="btn btn--primary" onclick="applyPlay()">▶ Play</button>
     </div>
 
-    <!-- Stop -->
+    <!-- Transport state -->
     <div class="card">
-      <h2 class="card__title">Stop</h2>
-      <p class="hint">Stops the current playback or recording. Switch to preview/output mode first if needed.</p>
-      <button class="btn btn--danger" onclick="sendCmd('stop')">⏹ Stop</button>
+      <h2 class="card__title">Transport State</h2>
+      <div class="dash-grid">
+        <div class="dash-cell"><div class="dash-cell__label">Status</div>
+          <div class="dash-cell__value"><span class="status-badge" id="dashStatus">—</span></div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Speed</div>
+          <div class="dash-cell__value" id="dashSpeed">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Clip ID</div>
+          <div class="dash-cell__value" id="dashClipId">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Slot ID</div>
+          <div class="dash-cell__value" id="dashSlotId">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Slot Name</div>
+          <div class="dash-cell__value" id="dashSlotName">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Device Name</div>
+          <div class="dash-cell__value" id="dashDevName">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Video Format</div>
+          <div class="dash-cell__value" id="dashVidFmt">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Loop</div>
+          <div class="dash-cell__value" id="dashLoop">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Single Clip</div>
+          <div class="dash-cell__value" id="dashSingleClip">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Timeline</div>
+          <div class="dash-cell__value" id="dashTimeline">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Dynamic Range</div>
+          <div class="dash-cell__value" id="dashDynRange">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">Ref Locked</div>
+          <div class="dash-cell__value" id="dashRefLocked">—</div></div>
+      </div>
     </div>
 
     <!-- Jog -->
@@ -400,7 +325,11 @@
       <p class="hint" id="gotoHint">
         Clip ID: absolute ID, +n or -n for relative (clamped to first/last clip).
       </p>
-      <button class="btn btn--primary" onclick="applyGoto()">Go To</button>
+      <div class="btn-row">
+        <button class="btn btn--primary" onclick="applyGoto()">Go To</button>
+        <button class="btn btn--sm" onclick="sendCmd('goto: timeline: start')">Go To Timeline Start</button>
+        <button class="btn btn--sm" onclick="sendCmd('goto: timeline: end')">Go To Timeline End</button>
+      </div>
     </div>
 
     <!-- Playrange -->

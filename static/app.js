@@ -55,6 +55,18 @@ const TRANSPORT_REFRESH_TIMEOUT_MS = 1_500;
 const TRANSPORT_TRANSITION_WINDOW_MS = 3_000;
 let transportTransitionDeadlineMs = 0;
 let lastObservedClipId = "";
+let lastRecordAttemptAtMs = 0;
+
+/**
+ * Local playback option state used to compose transport commands.
+ * Synced from transport state updates and user toggle interaction.
+ */
+const localPlayback = {
+  loop: false,
+  singleClip: false,
+  speed: 0,
+  status: "",
+};
 
 /** Saved connection profiles via backend JSON API. */
 const CONNECTIONS_API_BASE = "/api/connections";
@@ -264,6 +276,7 @@ function handleParsedResponse(code, text, kv) {
     case 208:
     case 508:
       clearTransportRefreshInFlight();
+      syncTransportActionButtons(deviceState);
       break; // state update handled via "state" message
 
     // ── 209  notify ────────────────────────────────────────────────────
@@ -329,6 +342,10 @@ function handleParsedResponse(code, text, kv) {
       break;
   }
 
+  if (code === 110 && Date.now() - lastRecordAttemptAtMs < 4000) {
+    window.alert("No Input");
+  }
+
   // Display error responses with descriptive messages
   if (code >= 100 && code <= 199) {
     const description = ERROR_CODE_DESCRIPTIONS[code] || "Error";
@@ -378,20 +395,24 @@ const ERROR_CODE_DESCRIPTIONS = {
  * Called whenever a { type: "state" } message arrives.
  */
 function applyStateToUI(state) {
+  syncLocalPlaybackFromState(state);
+
   // ── Transport status ──────────────────────────────────────────────────
   const status = state.transport_status || "";
   setStatusBadge("tsStatus",   status);
   setStatusBadge("dashStatus", status);
+  setCheckbox("previewEnable", String(status).trim().toLowerCase() === "preview");
 
-  setText("tsTimecode",   state.transport_timecode        || "—");
-  setText("tsSpeed",      formatSpeed(state.transport_speed));
-  setText("tsClipId",     state.transport_clip_id         || "—");
-  setText("tsSlot",       formatSlot(state));
   setText("tsFormat",     state.transport_video_format    || "—");
-  setText("tsLoop",       boolYesNo(state.transport_loop));
-  setText("tsTimeline",   state.transport_timeline        || "—");
-  setText("tsDynRange",   state.transport_dynamic_range   || "—");
-  setText("tsRefLocked",  boolYesNo(state.transport_reference_locked));
+  if (state.is_connected !== true) {
+    setText("tsStatus", "—");
+    const tsStatusEl = document.getElementById("tsStatus");
+    if (tsStatusEl) tsStatusEl.className = "status-badge stopped";
+    const tsFormatEl = document.getElementById("tsFormat");
+    setText("tsFormat", "—");
+    if (tsFormatEl) tsFormatEl.className = "status-badge stopped";
+  }
+  syncTransportActionButtons(state);
 
   // Dashboard transport
   setText("dashSpeed",      formatSpeed(state.transport_speed));
@@ -402,10 +423,11 @@ function applyStateToUI(state) {
   setText("dashVidFmt",     state.transport_video_format    || "—");
   setText("dashLoop",       boolYesNo(state.transport_loop));
   setText("dashSingleClip", boolYesNo(state.transport_single_clip));
+  setCheckbox("playLoop", localPlayback.loop);
+  setCheckbox("playSingleClip", localPlayback.singleClip);
   setText("dashTimeline",   state.transport_timeline        || "—");
   setText("dashDynRange",   state.transport_dynamic_range   || "—");
   setText("dashRefLocked",  boolYesNo(state.transport_reference_locked));
-  setText("dashInputFmt",   state.transport_input_video_format || "—");
 
   // Timecode displays (use display timecode when available, fall back to transport)
   const displayTC = state.transport_display_timecode || state.transport_timecode || "--:--:--:--";
@@ -413,14 +435,19 @@ function applyStateToUI(state) {
   if (state.is_connected === false) {
     setText("sidebarTimecode", "DISCONNECTED");
     sidebarTimecodeEl?.classList.add("timecode-display--disconnected");
+    if (sidebarTimecodeEl) sidebarTimecodeEl.title = "";
   } else {
     setText("sidebarTimecode", displayTC);
     sidebarTimecodeEl?.classList.remove("timecode-display--disconnected");
+    if (sidebarTimecodeEl) sidebarTimecodeEl.title = "Display Timecode";
   }
-  setText("dashTimecode",    displayTC);
-  setText("dashTlTimecode",  state.transport_timecode || "—");
 
   // ── Device info ───────────────────────────────────────────────────────
+  syncSidebarDeviceIdentity(
+    state.is_connected === true,
+    state.host || deviceState.host || "",
+    state.port || deviceState.port || "",
+  );
   setText("devModel",   state.model            || "—");
   setText("devSwVer",   state.software_version || "—");
   setText("devProto",   state.protocol_version || "—");
@@ -438,6 +465,15 @@ function applyStateToUI(state) {
   setText("remOverride", boolYesNo(state.remote_override));
   updateDashboardRemoteToggle(state.remote_enabled);
   updateDashboardOverrideToggle(state.remote_override);
+  if (state.is_connected === true) {
+    setBoolDot("sidebarDotRemote",  state.remote_enabled);
+    setBoolDot("sidebarDotRefLock", state.transport_reference_locked);
+  } else {
+    const sidebarDotRemote = document.getElementById("sidebarDotRemote");
+    const sidebarDotRefLock = document.getElementById("sidebarDotRefLock");
+    if (sidebarDotRemote) sidebarDotRemote.className = "dot dot--off";
+    if (sidebarDotRefLock) sidebarDotRefLock.className = "dot dot--off";
+  }
 
   // ── Configuration summary (dashboard) ─────────────────────────────────
   setText("dashCfgVidIn",    state.cfg_video_input          || "—");
@@ -539,6 +575,77 @@ function setStatusBadge(elementId, status) {
   // Strip all previous status classes then apply the new one
   el.className = "status-badge";
   if (status) el.classList.add(status.toLowerCase());
+}
+
+function hasNoInputCondition(state = deviceState) {
+  if (!state || state.is_connected !== true) return false;
+  const statusText = String(state.transport_status || "").toUpperCase();
+  const videoFmt = String(state.transport_video_format || "").toUpperCase();
+  const inputFmt = String(state.transport_input_video_format || "").toUpperCase();
+  return (
+    /\b(NO INPUT|NONE)\b/.test(statusText) ||
+    /\b(NO INPUT|NONE)\b/.test(videoFmt) ||
+    /\b(NO INPUT|NONE)\b/.test(inputFmt)
+  );
+}
+
+function syncTransportActionButtons(state = deviceState) {
+  const playBtn = document.getElementById("transportPlayBtn");
+  const recordBtn = document.getElementById("transportRecordBtn");
+  const rewindBtn = document.getElementById("transportRewindBtn");
+  const forwardBtn = document.getElementById("transportForwardBtn");
+  if (!playBtn && !recordBtn && !rewindBtn && !forwardBtn) return;
+
+  playBtn?.classList.remove("tbtn--active-play", "tbtn--active-record");
+  recordBtn?.classList.remove("tbtn--active-play", "tbtn--active-record", "tbtn--record-no-input");
+  rewindBtn?.classList.remove("tbtn--active-rewind", "tbtn--active-shuttle");
+  forwardBtn?.classList.remove("tbtn--active-forward", "tbtn--active-shuttle");
+  playBtn?.setAttribute("aria-pressed", "false");
+  recordBtn?.setAttribute("aria-pressed", "false");
+  recordBtn?.setAttribute("aria-disabled", "false");
+  rewindBtn?.setAttribute("aria-pressed", "false");
+  forwardBtn?.setAttribute("aria-pressed", "false");
+
+  if (!state || state.is_connected !== true) {
+    return;
+  }
+
+  if (hasNoInputCondition(state)) {
+    recordBtn?.classList.add("tbtn--record-no-input");
+    recordBtn?.setAttribute("aria-disabled", "true");
+    return;
+  }
+
+  const status = String(state.transport_status || "").trim().toUpperCase();
+  const speed = Number.parseInt(state.transport_speed ?? 0, 10);
+  if (status === "PLAY") {
+    playBtn?.classList.add("tbtn--active-play");
+    playBtn?.setAttribute("aria-pressed", "true");
+  } else if (status === "RECORD") {
+    recordBtn?.classList.add("tbtn--active-record");
+    recordBtn?.setAttribute("aria-pressed", "true");
+  } else if (status === "REWIND") {
+    rewindBtn?.classList.add("tbtn--active-rewind");
+    rewindBtn?.setAttribute("aria-pressed", "true");
+  } else if (status === "FORWARD") {
+    forwardBtn?.classList.add("tbtn--active-forward");
+    forwardBtn?.setAttribute("aria-pressed", "true");
+  } else if (status === "SHUTTLE") {
+    if (Number.isFinite(speed) && speed < 0) {
+      rewindBtn?.classList.add("tbtn--active-shuttle");
+      rewindBtn?.setAttribute("aria-pressed", "true");
+    } else if (Number.isFinite(speed) && speed > 0) {
+      forwardBtn?.classList.add("tbtn--active-shuttle");
+      forwardBtn?.setAttribute("aria-pressed", "true");
+    }
+  }
+}
+
+function setBoolDot(elementId, value) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const isTrue = value === true || String(value).trim().toLowerCase() === "true";
+  el.className = `dot ${isTrue ? "dot--on" : "dot--no"}`;
 }
 
 /**
@@ -650,29 +757,109 @@ function onSidebarTimecodeClick(event) {
   showToast("Use Connections tab to connect", "warn");
 }
 
+function onSidebarRemoteIndicatorClick(event) {
+  event?.stopPropagation();
+  if (!deviceState.is_connected) {
+    activateTab("connections");
+    showToast("Use Connections tab to connect", "warn");
+    return;
+  }
+
+  toggleDashboardRemote();
+}
+
+function findSavedConnectionName(host, port) {
+  const normalizedHost = String(host || "").trim();
+  const normalizedPort = parseInt(String(port || ""), 10);
+
+  if (!normalizedHost || !Number.isFinite(normalizedPort)) {
+    return "";
+  }
+
+  const match = savedConnectionProfiles.find((entry) => {
+    const entryHost = String(entry.host || "").trim();
+    const entryPort = parseInt(String(entry.port || ""), 10);
+    return entryHost === normalizedHost && entryPort === normalizedPort;
+  });
+
+  return String(match?.name || "").trim();
+}
+
+function syncTopbarConnectionIndicator(isConnected, host = "", port = "") {
+  const statusText = document.getElementById("statusText");
+  const topbarStatus = document.getElementById("topbarStatus");
+  if (!statusText) return;
+
+  if (isConnected) {
+    const endpointText = `${host}:${port}`;
+    const savedName = findSavedConnectionName(host, port);
+    statusText.textContent = savedName || endpointText;
+    topbarStatus?.setAttribute("title", `${endpointText}\nClick to Disconnect`);
+    return;
+  }
+
+  statusText.textContent = "Disconnected";
+  topbarStatus?.removeAttribute("title");
+}
+
+function syncSidebarDeviceIdentity(isConnected, host = "", port = "") {
+  const labelEl = document.getElementById("devNameLabel");
+  const valueEl = document.getElementById("devNameValue");
+  if (!labelEl || !valueEl) return;
+
+  if (!isConnected) {
+    labelEl.textContent = "Name";
+    valueEl.textContent = "—";
+    return;
+  }
+
+  const savedName = findSavedConnectionName(host, port);
+  if (savedName) {
+    labelEl.textContent = "Name";
+    valueEl.textContent = savedName;
+    return;
+  }
+
+  const endpointHost = String(host || "").trim();
+  const endpointPort = String(port || "").trim();
+  labelEl.textContent = "IP";
+  valueEl.textContent = endpointHost
+    ? (endpointPort ? `${endpointHost}:${endpointPort}` : endpointHost)
+    : "—";
+}
+
 /**
  * Update connection state widgets: dot colour, status text, button states.
  */
 function updateConnectionUI(isConnected, host = "", port = "") {
   const dot        = document.getElementById("statusDot");
-  const statusText = document.getElementById("statusText");
   const connectionsTabBtn = document.getElementById("connectionsTabBtn");
   const sidebarTimecode = document.getElementById("sidebarTimecode");
+  const sidebarDeviceSection = document.getElementById("sidebarDeviceSection");
+  syncTopbarConnectionIndicator(isConnected, host, port);
+  syncSidebarDeviceIdentity(isConnected, host, port);
+  if (sidebarDeviceSection) {
+    sidebarDeviceSection.style.display = isConnected ? "" : "none";
+  }
 
   if (isConnected) {
     dot.className = "dot dot--on";
-    statusText.textContent = `${host}:${port}`;
     connectionsTabBtn?.classList.remove("tab--needs-connection");
     sidebarTimecode?.classList.remove("timecode-display--disconnected");
   } else {
     dot.className = "dot dot--off";
-    statusText.textContent = "Disconnected";
     connectionsTabBtn?.classList.add("tab--needs-connection");
     lastSyncedConnectionModelKey = "";
     // Reset live displays
     setText("sidebarTimecode", "DISCONNECTED");
     sidebarTimecode?.classList.add("timecode-display--disconnected");
-    setText("dashTimecode",    "--:--:--:--");
+    setText("tsStatus", "—");
+    const tsStatusEl = document.getElementById("tsStatus");
+    if (tsStatusEl) tsStatusEl.className = "status-badge stopped";
+    const tsFormatEl = document.getElementById("tsFormat");
+    setText("tsFormat", "—");
+    if (tsFormatEl) tsFormatEl.className = "status-badge stopped";
+    syncTransportActionButtons({ is_connected: false });
   }
 
   // Refresh connected marker in saved profile rows.
@@ -700,7 +887,10 @@ function renderConnectionProfiles() {
     return;
   }
 
-  list.innerHTML = "";
+  // Clear old children properly to avoid listener leaks
+  while (list.firstChild) {
+    list.removeChild(list.firstChild);
+  }
   savedConnectionProfiles.forEach((entry) => {
     const item = document.createElement("div");
     item.className = "saved-connection-item";
@@ -742,6 +932,12 @@ function renderConnectionProfiles() {
 
     list.appendChild(item);
   });
+
+  // Keep top-right status label synced with profile name edits/reorders.
+  if (deviceState.is_connected === true) {
+    syncTopbarConnectionIndicator(true, deviceState.host || "", deviceState.port || "");
+    syncSidebarDeviceIdentity(true, deviceState.host || "", deviceState.port || "");
+  }
 }
 
 function onSavedConnectionClick(profileId) {
@@ -796,10 +992,6 @@ async function addConnectionProfileFromForm() {
   const host = String(document.getElementById("connProfileHost")?.value || "").trim();
   const port = parseInt(String(document.getElementById("connProfilePort")?.value || "9993"), 10) || 9993;
 
-  if (!name) {
-    showToast("Enter a descriptive name", "error");
-    return;
-  }
   if (!host) {
     showToast("Enter a Host / IP", "error");
     return;
@@ -946,11 +1138,14 @@ function sendCmd(command, options = {}) {
     return;
   }
 
+  const commandToSend = appendPlaybackOptionsToTransportCommand(command);
+  rememberLocalTransportFromCommand(commandToSend);
+
   if (!options.quiet) {
-    armTransportRefreshWindow(command);
+    armTransportRefreshWindow(commandToSend);
   }
 
-  sendToBackend({ action: "command", command, quiet: options.quiet === true });
+  sendToBackend({ action: "command", command: commandToSend, quiet: options.quiet === true });
 }
 
 // ============================================================
@@ -964,16 +1159,113 @@ function sendCmd(command, options = {}) {
  *   play: speed: 200 loop: true clip id: 3
  */
 function applyPlay() {
-  const opts = {};
-  const speedVal = document.getElementById("playSpeed").value.trim();
-  if (speedVal && speedVal !== "100") opts.speed = speedVal;
-  if (document.getElementById("playLoop").checked) opts.loop = "true";
-  if (document.getElementById("playSingleClip").checked) opts["single clip"] = "true";
-  const clipId = document.getElementById("playClipId").value.trim();
-  const tcOff  = document.getElementById("playTimecodeOffset").value.trim();
-  if (clipId) opts["clip id"] = clipId;
-  if (tcOff && clipId) opts.timecode = tcOff;
-  sendCmd(buildInlineCommand("play", opts));
+  sendCmd("play");
+}
+
+function applyPlaybackToggle(optionKey, enabled) {
+  if (optionKey === "loop") {
+    localPlayback.loop = enabled;
+  } else if (optionKey === "single clip") {
+    localPlayback.singleClip = enabled;
+  }
+
+  setCheckbox("playLoop", localPlayback.loop);
+  setCheckbox("playSingleClip", localPlayback.singleClip);
+
+  const status = getEffectiveTransportStatus();
+  const boolText = enabled ? "true" : "false";
+  if (status === "RECORD") {
+    return;
+  }
+
+  const currentSpeed = getEffectiveTransportSpeed();
+  if (status === "PLAY") {
+    sendCmd(`play: ${optionKey}: ${boolText}`, { quiet: true });
+  } else if (["SHUTTLE", "FORWARD", "REWIND"].includes(status)) {
+    sendCmd(`play: ${optionKey}: ${boolText} speed: ${currentSpeed}`, { quiet: true });
+  } else if (["STOPPED", "PREVIEW"].includes(status)) {
+    sendCmd(`play: ${optionKey}: ${boolText} speed: 0`, { quiet: true });
+  } else {
+    sendCmd(`play: ${optionKey}: ${boolText}`, { quiet: true });
+  }
+
+  setTimeout(() => sendCmd("transport info", { quiet: true }), 180);
+  setTimeout(() => sendCmd("transport info", { quiet: true }), 650);
+}
+
+function onPlayLoopToggleChange() {
+  const enabled = getChecked("playLoop");
+  applyPlaybackToggle("loop", enabled);
+}
+
+function onPlaySingleClipToggleChange() {
+  const enabled = getChecked("playSingleClip");
+  applyPlaybackToggle("single clip", enabled);
+}
+
+function syncLocalPlaybackFromState(state) {
+  localPlayback.loop = Boolean(state.transport_loop);
+  localPlayback.singleClip = Boolean(state.transport_single_clip);
+  const speed = Number.parseInt(state.transport_speed ?? 0, 10);
+  if (Number.isFinite(speed)) {
+    localPlayback.speed = speed;
+  }
+  localPlayback.status = String(state.transport_status || "").trim().toUpperCase();
+}
+
+function getEffectiveTransportStatus() {
+  if (localPlayback.status) return localPlayback.status;
+  return String(deviceState.transport_status || "").trim().toUpperCase();
+}
+
+function getEffectiveTransportSpeed() {
+  if (Number.isFinite(localPlayback.speed)) return localPlayback.speed;
+  const speed = Number.parseInt(deviceState.transport_speed ?? 0, 10);
+  return Number.isFinite(speed) ? speed : 0;
+}
+
+function appendPlaybackOptionsToTransportCommand(command) {
+  const cmd = String(command || "").trim();
+  if (!cmd) return cmd;
+
+  const normalized = cmd.toLowerCase();
+  const isPlayCmd = normalized === "play" || normalized.startsWith("play:");
+  const isShuttleCmd = normalized.startsWith("shuttle:");
+  if (!isPlayCmd && !isShuttleCmd) {
+    return cmd;
+  }
+
+  let out = cmd;
+  if (localPlayback.loop && !/\bloop\s*:/i.test(out)) {
+    out += " loop: true";
+  }
+  if (localPlayback.singleClip && !/\bsingle\s+clip\s*:/i.test(out)) {
+    out += " single clip: true";
+  }
+  return out;
+}
+
+function rememberLocalTransportFromCommand(command) {
+  const cmd = String(command || "").trim();
+  if (!cmd) return;
+
+  const loopMatch = cmd.match(/\bloop\s*:\s*(true|false)\b/i);
+  if (loopMatch) {
+    localPlayback.loop = loopMatch[1].toLowerCase() === "true";
+  }
+
+  const singleClipMatch = cmd.match(/\bsingle\s+clip\s*:\s*(true|false)\b/i);
+  if (singleClipMatch) {
+    localPlayback.singleClip = singleClipMatch[1].toLowerCase() === "true";
+  }
+
+  const speedMatch = cmd.match(/\bspeed\s*:\s*(-?\d+)\b/i);
+  if (speedMatch) {
+    const parsed = Number.parseInt(speedMatch[1], 10);
+    if (Number.isFinite(parsed)) {
+      localPlayback.speed = parsed;
+    }
+  }
 }
 
 /** Quick play shortcut (no extra params) used by dashboard/sidebar buttons. */
@@ -1140,6 +1432,12 @@ function confirmClipsClear() {
 
 /** Build and send a "record" command with optional clip name. */
 function applyRecord() {
+  if (hasNoInputCondition(deviceState)) {
+    window.alert("No Input");
+    return;
+  }
+
+  lastRecordAttemptAtMs = Date.now();
   const name = document.getElementById("recordName").value.trim();
   sendCmd(name ? `record: name: ${name}` : "record");
 }
@@ -1587,6 +1885,10 @@ function sendConsoleCommand() {
   const cmd = el.value.trim().replace(/\\n/g, "\n");
   if (!cmd) return;
   commandHistory.unshift(cmd);
+  // Prevent unbounded growth of command history over long sessions
+  if (commandHistory.length > 100) {
+    commandHistory.pop();
+  }
   historyIndex = -1;
   sendCmd(cmd);
   el.value = "";
@@ -1998,6 +2300,9 @@ function initUI() {
   document.getElementById("connProfileHost")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") addConnectionProfileFromForm();
   });
+
+  document.getElementById("playLoop")?.addEventListener("change", onPlayLoopToggleChange);
+  document.getElementById("playSingleClip")?.addEventListener("change", onPlaySingleClipToggleChange);
 
   document.getElementById("connProfilePort")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") addConnectionProfileFromForm();
