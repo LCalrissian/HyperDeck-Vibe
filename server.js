@@ -171,12 +171,12 @@ class DeviceState {
     this.transport_slot_name = "";
     this.transport_device_name = "";
     this.transport_clip_id = "";
-    this.transport_single_clip = false;
+    this.transport_single_clip = null;
     this.transport_display_timecode = "";
     this.transport_timecode = "";
     this.transport_video_format = "";
     this.transport_input_video_format = "";
-    this.transport_loop = false;
+    this.transport_loop = null;
     this.transport_timeline = "";
     this.transport_dynamic_range = "";
     this.transport_reference_locked = false;
@@ -374,8 +374,6 @@ const broadcaster = new WebSocketBroadcaster();
 
 let responseAccumulator = [];
 let inMultilineResponse = false;
-let pendingQuietTransportBlocks = 0;
-let suppressCurrentResponseEvent = false;
 
 function buildInlineCommand(command, params) {
   const keys = Object.keys(params || {});
@@ -396,9 +394,14 @@ function parseKeyValueBlock(lines) {
   const result = {};
   for (const rawLine of lines) {
     const stripped = String(rawLine || "").trim();
-    const idx = stripped.indexOf(": ");
+    // Some firmware responses use nested key tokens like
+    // "device: name: HyperDeck...". Split on the LAST ": " so the
+    // full key is preserved and normalize internal ": " to spaces.
+    const idx = stripped.lastIndexOf(": ");
     if (idx !== -1) {
-      result[stripped.slice(0, idx)] = stripped.slice(idx + 2);
+      const rawKey = stripped.slice(0, idx);
+      const normalizedKey = rawKey.replace(/:\s+/g, " ").trim().toLowerCase();
+      result[normalizedKey] = stripped.slice(idx + 2);
     }
   }
   return result;
@@ -487,7 +490,7 @@ async function handleCompleteResponse(code, text, kv) {
   } else if (code === 208 || code === 508) {
     state.transport_slot_id = kv["slot id"] || state.transport_slot_id;
     state.transport_slot_name = kv["slot name"] || state.transport_slot_name;
-    state.transport_device_name = kv["device name"] || state.transport_device_name;
+    state.transport_device_name = kv["device name"] || kv["device"] || state.transport_device_name;
     state.transport_clip_id = kv["clip id"] || state.transport_clip_id;
     state.transport_display_timecode = kv["display timecode"] || state.transport_display_timecode;
     state.transport_timecode = kv["timecode"] || state.transport_timecode;
@@ -572,28 +575,18 @@ async function onHyperDeckLine(line) {
     }
 
     const rest = firstSpace === -1 ? "" : line.slice(firstSpace + 1);
-    const suppressResponseEvent = code === 208 && pendingQuietTransportBlocks > 0;
-    if (suppressResponseEvent) {
-      pendingQuietTransportBlocks -= 1;
-    }
-
-    if (!suppressResponseEvent) {
-      broadcaster.broadcast({ type: "raw_line", line });
-    }
+    broadcaster.broadcast({ type: "raw_line", line });
 
     if (rest.endsWith(":")) {
       inMultilineResponse = true;
       responseAccumulator = [line];
-      suppressCurrentResponseEvent = suppressResponseEvent;
     } else {
       await handleCompleteResponse(code, rest, {});
     }
     return;
   }
 
-  if (!suppressCurrentResponseEvent) {
-    broadcaster.broadcast({ type: "raw_line", line });
-  }
+  broadcaster.broadcast({ type: "raw_line", line });
 
   if (line === "") {
     const code = parseResponseCode(responseAccumulator[0]);
@@ -603,7 +596,6 @@ async function onHyperDeckLine(line) {
     responseAccumulator = [];
     inMultilineResponse = false;
     await handleCompleteResponse(code, responseText, kv);
-    suppressCurrentResponseEvent = false;
     return;
   }
 
@@ -896,15 +888,8 @@ wss.on("connection", (ws) => {
       }
 
       try {
-        if (quiet && command.toLowerCase() === "transport info") {
-          pendingQuietTransportBlocks += 1;
-        }
-
         await device.send(command);
-
-        if (!quiet) {
-          broadcaster.broadcast({ type: "sent", line: command });
-        }
+        broadcaster.broadcast({ type: "sent", line: command });
       } catch (error) {
         broadcaster.sendTo(ws, { type: "error", message: `Send failed: ${error.message}` });
       }

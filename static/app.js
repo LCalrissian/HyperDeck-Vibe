@@ -53,9 +53,12 @@ let transportRefreshArmedByCommand = false;
 const TRANSPORT_REFRESH_INTERVAL_MS = 500;
 const TRANSPORT_REFRESH_TIMEOUT_MS = 1_500;
 const TRANSPORT_TRANSITION_WINDOW_MS = 3_000;
+const STOPPED_NOTIFY_REFRESH_DELAY_MS = 120;
 let transportTransitionDeadlineMs = 0;
+let stoppedNotifyRefreshTimeoutId = null;
 let lastObservedClipId = "";
 let lastRecordAttemptAtMs = 0;
+let hasTransportStateHydratedForSession = false;
 
 /**
  * Local playback option state used to compose transport commands.
@@ -68,12 +71,21 @@ const localPlayback = {
   status: "",
 };
 
+const pendingPlaybackIntent = {
+  loop: null,
+  singleClip: null,
+};
+
 /** Saved connection profiles via backend JSON API. */
 const CONNECTIONS_API_BASE = "/api/connections";
 let savedConnectionProfiles = [];
 let lastSyncedConnectionModelKey = "";
 let draggedConnectionId = null;
 let didConnectionDrag = false;
+let lastConnectionProfilesRenderKey = "";
+
+const MAX_CONSOLE_LINES = 500;
+let suppressCurrent208RawConsoleBlock = false;
 
 // ============================================================
 // SECTION: WebSocket management
@@ -146,11 +158,13 @@ function sendToBackend(payload) {
 function handleServerMessage(message) {
   switch (message.type) {
     case "connected":
+      hasTransportStateHydratedForSession = false;
       updateConnectionUI(true, message.host, message.port);
       startWatchdog();
       break;
 
     case "disconnected":
+      hasTransportStateHydratedForSession = false;
       updateConnectionUI(false);
       stopWatchdog();
       stopTransportAutoRefresh();
@@ -161,8 +175,17 @@ function handleServerMessage(message) {
       break;
 
     case "sent":
-      // Display the command we sent in a distinct colour
-      consoleLog(`→ ${message.line}`, "cl--sent");
+      {
+        const sentLine = String(message.line || "").trim();
+        const hide208Enabled = getChecked("consoleHide208");
+        const isTransportInfoSent = /^transport\s+info\b/i.test(sentLine);
+        if (hide208Enabled && isTransportInfoSent) {
+          break;
+        }
+
+        // Display the command we sent in a distinct colour
+        consoleLog(`→ ${message.line}`, "cl--sent");
+      }
       break;
 
     case "response":
@@ -170,12 +193,19 @@ function handleServerMessage(message) {
       break;
 
     case "state":
+      {
+        const previousConnectionKey = `${Boolean(deviceState.is_connected)}|${String(deviceState.host || "").trim()}|${String(deviceState.port || "").trim()}`;
       deviceState = message.state || {};
-      updateConnectionUI(
-        deviceState.is_connected === true,
-        deviceState.host || "",
-        deviceState.port || "",
-      );
+        const nextConnectionKey = `${Boolean(deviceState.is_connected)}|${String(deviceState.host || "").trim()}|${String(deviceState.port || "").trim()}`;
+
+        if (nextConnectionKey !== previousConnectionKey) {
+          updateConnectionUI(
+            deviceState.is_connected === true,
+            deviceState.host || "",
+            deviceState.port || "",
+          );
+        }
+      }
       applyStateToUI(deviceState);
       break;
 
@@ -199,6 +229,11 @@ function handleServerMessage(message) {
  */
 function handleRawConsoleLine(rawLine) {
   if (rawLine === "") {
+    if (suppressCurrent208RawConsoleBlock) {
+      suppressCurrent208RawConsoleBlock = false;
+      return;
+    }
+
     // Blank line separates multiline blocks; show as faint separator
     consoleLog("", "cl--blank");
     return;
@@ -206,12 +241,21 @@ function handleRawConsoleLine(rawLine) {
 
   const codeMatch = rawLine.match(/^(\d{3})\s/);
   if (!codeMatch) {
+    if (suppressCurrent208RawConsoleBlock) {
+      return;
+    }
+
     // Continuation line inside a multiline block (key: value pairs)
     consoleLog(`   ${rawLine}`, "cl--data");
     return;
   }
 
   const code = parseInt(codeMatch[1], 10);
+  const hide208Enabled = getChecked("consoleHide208");
+  if (hide208Enabled && code === 208) {
+    suppressCurrent208RawConsoleBlock = /:\s*$/.test(rawLine);
+    return;
+  }
 
   if (code === 200) {
     consoleLog(rawLine, "cl--200");
@@ -275,6 +319,38 @@ function handleParsedResponse(code, text, kv) {
     // ── 208 / 508  transport info ──────────────────────────────────────
     case 208:
     case 508:
+      hasTransportStateHydratedForSession = true;
+
+      const responseStatus = String(kv.status || deviceState.transport_status || "")
+        .trim()
+        .toUpperCase();
+      const allowDeckPlaybackFlagOverride = !(responseStatus === "STOPPED" || responseStatus === "PREVIEW");
+
+      // These keys are definitive only when present in 208/508 payloads.
+      if (Object.prototype.hasOwnProperty.call(kv, "loop")) {
+        const nextLoop = String(kv.loop).trim().toLowerCase() === "true";
+        if (pendingPlaybackIntent.loop === null || allowDeckPlaybackFlagOverride) {
+          localPlayback.loop = nextLoop;
+          pendingPlaybackIntent.loop = null;
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(kv, "single clip")) {
+        const nextSingleClip = String(kv["single clip"]).trim().toLowerCase() === "true";
+        if (pendingPlaybackIntent.singleClip === null || allowDeckPlaybackFlagOverride) {
+          localPlayback.singleClip = nextSingleClip;
+          pendingPlaybackIntent.singleClip = null;
+        }
+      }
+
+      setCheckbox("playLoop", pendingPlaybackIntent.loop ?? localPlayback.loop);
+      setCheckbox("playSingleClip", pendingPlaybackIntent.singleClip ?? localPlayback.singleClip);
+
+      // In STOPPED state we do not run continuous polling. A 508 notify can be
+      // followed by a single 208 query to collect a fresh snapshot.
+      if (code === 508 && responseStatus === "STOPPED") {
+        queueStoppedNotifyTransportRefresh();
+      }
+
       clearTransportRefreshInFlight();
       syncTransportActionButtons(deviceState);
       break; // state update handled via "state" message
@@ -399,9 +475,16 @@ function applyStateToUI(state) {
 
   // ── Transport status ──────────────────────────────────────────────────
   const status = state.transport_status || "";
-  setStatusBadge("tsStatus",   status);
-  setStatusBadge("dashStatus", status);
+  const normalizedStatus = String(status).trim().toUpperCase();
+  setStatusBadge("tsStatus",   status, state.transport_speed);
+  setStatusBadge("dashStatus", status, state.transport_speed);
   setCheckbox("previewEnable", String(status).trim().toLowerCase() === "preview");
+
+  const tsStatusEl = document.getElementById("tsStatus");
+  tsStatusEl?.classList.toggle(
+    "status-badge--stopped-alert",
+    state.is_connected === true && normalizedStatus === "STOPPED",
+  );
 
   setText("tsFormat",     state.transport_video_format    || "—");
   if (state.is_connected !== true) {
@@ -417,7 +500,7 @@ function applyStateToUI(state) {
   // Dashboard transport
   setText("dashSpeed",      formatSpeed(state.transport_speed));
   setText("dashClipId",     state.transport_clip_id         || "—");
-  setText("dashSlotId",     state.transport_slot_id         || "—");
+  setText("dashSlotId",     formatSlot(state));
   setText("dashSlotName",   state.transport_slot_name       || "—");
   setText("dashDevName",    state.transport_device_name     || "—");
   setText("dashVidFmt",     state.transport_video_format    || "—");
@@ -568,10 +651,20 @@ function stateFlagEnabled(value) {
  * Set the visual class (colour) of a status badge element based on transport status.
  * The class name matches the CSS .status-badge.{status} rules in style.css.
  */
-function setStatusBadge(elementId, status) {
+function setStatusBadge(elementId, status, speed = null) {
   const el = document.getElementById(elementId);
   if (!el) return;
-  el.textContent = status || "—";
+
+  const normalizedStatus = String(status || "").trim().toUpperCase();
+  let labelText = status || "—";
+  if (normalizedStatus === "SHUTTLE") {
+    const parsedSpeed = Number.parseInt(speed ?? 0, 10);
+    if (Number.isFinite(parsedSpeed)) {
+      labelText = `SHUTTLE ${parsedSpeed}%`;
+    }
+  }
+
+  el.textContent = labelText;
   // Strip all previous status classes then apply the new one
   el.className = "status-badge";
   if (status) el.classList.add(status.toLowerCase());
@@ -590,16 +683,19 @@ function hasNoInputCondition(state = deviceState) {
 }
 
 function syncTransportActionButtons(state = deviceState) {
+  const stopBtn = document.getElementById("transportStopBtn");
   const playBtn = document.getElementById("transportPlayBtn");
   const recordBtn = document.getElementById("transportRecordBtn");
   const rewindBtn = document.getElementById("transportRewindBtn");
   const forwardBtn = document.getElementById("transportForwardBtn");
-  if (!playBtn && !recordBtn && !rewindBtn && !forwardBtn) return;
+  if (!stopBtn && !playBtn && !recordBtn && !rewindBtn && !forwardBtn) return;
 
+  stopBtn?.classList.remove("tbtn--active-stop");
   playBtn?.classList.remove("tbtn--active-play", "tbtn--active-record");
   recordBtn?.classList.remove("tbtn--active-play", "tbtn--active-record", "tbtn--record-no-input");
   rewindBtn?.classList.remove("tbtn--active-rewind", "tbtn--active-shuttle");
   forwardBtn?.classList.remove("tbtn--active-forward", "tbtn--active-shuttle");
+  stopBtn?.setAttribute("aria-pressed", "false");
   playBtn?.setAttribute("aria-pressed", "false");
   recordBtn?.setAttribute("aria-pressed", "false");
   recordBtn?.setAttribute("aria-disabled", "false");
@@ -610,18 +706,21 @@ function syncTransportActionButtons(state = deviceState) {
     return;
   }
 
-  if (hasNoInputCondition(state)) {
+  const hasNoInput = hasNoInputCondition(state);
+  if (hasNoInput) {
     recordBtn?.classList.add("tbtn--record-no-input");
     recordBtn?.setAttribute("aria-disabled", "true");
-    return;
   }
 
   const status = String(state.transport_status || "").trim().toUpperCase();
   const speed = Number.parseInt(state.transport_speed ?? 0, 10);
-  if (status === "PLAY") {
+  if (status === "STOPPED") {
+    stopBtn?.classList.add("tbtn--active-stop");
+    stopBtn?.setAttribute("aria-pressed", "true");
+  } else if (status === "PLAY") {
     playBtn?.classList.add("tbtn--active-play");
     playBtn?.setAttribute("aria-pressed", "true");
-  } else if (status === "RECORD") {
+  } else if (status === "RECORD" && !hasNoInput) {
     recordBtn?.classList.add("tbtn--active-record");
     recordBtn?.setAttribute("aria-pressed", "true");
   } else if (status === "REWIND") {
@@ -862,8 +961,13 @@ function updateConnectionUI(isConnected, host = "", port = "") {
     syncTransportActionButtons({ is_connected: false });
   }
 
-  // Refresh connected marker in saved profile rows.
-  renderConnectionProfiles();
+  // Re-render the saved connections list only when the connection marker changes.
+  // This avoids rebuilding list DOM on every transport state update.
+  const connectionMarkerKey = `${Boolean(isConnected)}|${String(host || "").trim()}|${String(port || "").trim()}`;
+  if (connectionMarkerKey !== lastConnectionProfilesRenderKey) {
+    lastConnectionProfilesRenderKey = connectionMarkerKey;
+    renderConnectionProfiles();
+  }
 }
 
 async function loadConnectionProfiles() {
@@ -1178,6 +1282,21 @@ function applyPlaybackToggle(optionKey, enabled) {
     return;
   }
 
+  if (status === "STOPPED" || status === "PREVIEW") {
+    if (optionKey === "loop") {
+      pendingPlaybackIntent.loop = enabled;
+    } else if (optionKey === "single clip") {
+      pendingPlaybackIntent.singleClip = enabled;
+    }
+    return;
+  }
+
+  if (optionKey === "loop") {
+    pendingPlaybackIntent.loop = null;
+  } else if (optionKey === "single clip") {
+    pendingPlaybackIntent.singleClip = null;
+  }
+
   const currentSpeed = getEffectiveTransportSpeed();
   if (status === "PLAY") {
     sendCmd(`play: ${optionKey}: ${boolText}`, { quiet: true });
@@ -1204,8 +1323,17 @@ function onPlaySingleClipToggleChange() {
 }
 
 function syncLocalPlaybackFromState(state) {
-  localPlayback.loop = Boolean(state.transport_loop);
-  localPlayback.singleClip = Boolean(state.transport_single_clip);
+  if (!state || state.is_connected !== true) {
+    return;
+  }
+
+  // Preserve runtime toggle choices until the first transport info block arrives
+  // for the current connection. This avoids resetting toggles to defaults during
+  // initial connect/disconnect state transitions.
+  if (!hasTransportStateHydratedForSession) {
+    return;
+  }
+
   const speed = Number.parseInt(state.transport_speed ?? 0, 10);
   if (Number.isFinite(speed)) {
     localPlayback.speed = speed;
@@ -1236,11 +1364,19 @@ function appendPlaybackOptionsToTransportCommand(command) {
   }
 
   let out = cmd;
-  if (localPlayback.loop && !/\bloop\s*:/i.test(out)) {
-    out += " loop: true";
+  const isBarePlay = isPlayCmd && /^play$/i.test(out);
+  const desiredLoop = pendingPlaybackIntent.loop ?? localPlayback.loop;
+  const desiredSingleClip = pendingPlaybackIntent.singleClip ?? localPlayback.singleClip;
+
+  if (desiredLoop && !/\bloop\s*:/i.test(out)) {
+    out = isBarePlay ? "play: loop: true" : `${out} loop: true`;
   }
-  if (localPlayback.singleClip && !/\bsingle\s+clip\s*:/i.test(out)) {
-    out += " single clip: true";
+  if (desiredSingleClip && !/\bsingle\s+clip\s*:/i.test(out)) {
+    if (isBarePlay && out.toLowerCase() === "play") {
+      out = "play: single clip: true";
+    } else {
+      out += " single clip: true";
+    }
   }
   return out;
 }
@@ -1252,11 +1388,13 @@ function rememberLocalTransportFromCommand(command) {
   const loopMatch = cmd.match(/\bloop\s*:\s*(true|false)\b/i);
   if (loopMatch) {
     localPlayback.loop = loopMatch[1].toLowerCase() === "true";
+    pendingPlaybackIntent.loop = null;
   }
 
   const singleClipMatch = cmd.match(/\bsingle\s+clip\s*:\s*(true|false)\b/i);
   if (singleClipMatch) {
     localPlayback.singleClip = singleClipMatch[1].toLowerCase() === "true";
+    pendingPlaybackIntent.singleClip = null;
   }
 
   const speedMatch = cmd.match(/\bspeed\s*:\s*(-?\d+)\b/i);
@@ -1916,7 +2054,7 @@ function consoleLog(text, cssClass = "cl") {
   out.appendChild(line);
 
   // Keep the console from growing unbounded
-  while (out.childElementCount > 2000) {
+  while (out.childElementCount > MAX_CONSOLE_LINES) {
     out.removeChild(out.firstChild);
   }
 
@@ -1978,15 +2116,16 @@ function syncTransportAutoRefresh(state = deviceState) {
 function shouldAutoRefreshTransport(state = deviceState) {
   const status = String(state.transport_status || "").toUpperCase();
   const speed = Number.parseInt(state.transport_speed ?? 0, 10);
-  const inTransitionWindow =
-    transportRefreshArmedByCommand && Date.now() < transportTransitionDeadlineMs;
-  const isStopped = status === "STOPPED" && speed === 0;
 
-  if (isStopped && !inTransitionWindow) {
+  // Requirement: never poll transport info continuously while STOPPED.
+  if (status === "STOPPED") {
     transportRefreshArmedByCommand = false;
     transportTransitionDeadlineMs = 0;
     return false;
   }
+
+  const inTransitionWindow =
+    transportRefreshArmedByCommand && Date.now() < transportTransitionDeadlineMs;
 
   if (status === "RECORD") {
     return true;
@@ -2020,9 +2159,29 @@ function stopTransportAutoRefresh() {
     transportRefreshIntervalId = null;
   }
 
+  if (stoppedNotifyRefreshTimeoutId !== null) {
+    clearTimeout(stoppedNotifyRefreshTimeoutId);
+    stoppedNotifyRefreshTimeoutId = null;
+  }
+
   transportRefreshArmedByCommand = false;
   transportTransitionDeadlineMs = 0;
   clearTransportRefreshInFlight();
+}
+
+function queueStoppedNotifyTransportRefresh() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  if (stoppedNotifyRefreshTimeoutId !== null) {
+    clearTimeout(stoppedNotifyRefreshTimeoutId);
+  }
+
+  stoppedNotifyRefreshTimeoutId = setTimeout(() => {
+    stoppedNotifyRefreshTimeoutId = null;
+    requestTransportRefresh();
+  }, STOPPED_NOTIFY_REFRESH_DELAY_MS);
 }
 
 function requestTransportRefresh() {
@@ -2250,10 +2409,24 @@ function formatSpeed(speed) {
 
 /** Format slot id + slot name into a combined display string. */
 function formatSlot(state) {
-  const id   = state.transport_slot_id   || "";
-  const name = state.transport_slot_name || state.transport_device_name || "";
-  if (id && name) return `${id} (${name})`;
-  return id || name || "—";
+  const id = String(state.transport_slot_id || "").trim();
+  const slotName = String(state.transport_slot_name || "").trim();
+  const deviceName = String(state.transport_device_name || "").trim();
+
+  const normalizedSlotName = slotName.toLowerCase();
+  const normalizedDeviceName = deviceName.toLowerCase();
+  const shouldAppendDevice =
+    deviceName && normalizedDeviceName !== normalizedSlotName;
+
+  let label = id;
+  if (slotName) {
+    label = label ? `${label} - ${slotName}` : slotName;
+  }
+  if (shouldAppendDevice) {
+    label = label ? `${label} - ${deviceName}` : deviceName;
+  }
+
+  return label || "—";
 }
 
 /** Return "Yes" / "No" for boolean state values. */

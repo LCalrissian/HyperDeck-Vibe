@@ -45,10 +45,6 @@
       <table class="info-table">
         <tr><td id="devNameLabel">Name</td> <td id="devNameValue">—</td></tr>
         <tr><td>Model</td>    <td id="devModel">—</td></tr>
-        <tr><td>SW Ver</td>   <td id="devSwVer">—</td></tr>
-        <tr><td>Protocol</td> <td id="devProto">—</td></tr>
-        <tr><td>Slots</td>    <td id="devSlots">—</td></tr>
-        <tr><td>Unique ID</td><td id="devId" style="font-size:.75em;word-break:break-all">—</td></tr>
       </table>
     </div>
 
@@ -204,7 +200,7 @@
 
   <!-- ═══════════════════════════════════════════════════════
        TRANSPORT  – play, stop, record, jog, shuttle, goto,
-                    playrange, play on startup, play option, preview
+          playrange, preview
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel active" id="tab-transport">
 
@@ -214,19 +210,19 @@
       <div class="transport-btns">
         <button class="tbtn" onclick="sendCmd('goto: clip id: -1')" title="Previous clip">⏮</button>
         <button class="tbtn tbtn--clip-nav" id="transportRewindBtn" onclick="sendCmd('shuttle: speed: -5000')" title="Rewind">◀◀</button>
-        <button class="tbtn tbtn--stop"   onclick="sendCmd('stop')"   title="Stop">⏹</button>
+        <button class="tbtn tbtn--stop" id="transportStopBtn" onclick="sendCmd('stop')" title="Stop">⏹</button>
         <button class="tbtn tbtn--play"   id="transportPlayBtn" onclick="applyPlay()"       title="Play">⏵</button>
         <button class="tbtn tbtn--record" id="transportRecordBtn" onclick="applyRecord()"     title="Record">⏺</button>
         <button class="tbtn tbtn--clip-nav" id="transportForwardBtn" onclick="sendCmd('shuttle: speed: 5000')"   title="Fast Forward">▶▶</button>
         <button class="tbtn" onclick="sendCmd('goto: clip id: +1')" title="Next clip">⏭</button>
       </div>
 
-      <div class="field-grid">
-        <div class="field-row span-2 playback-toggle-row">
+      <div class="playback-toggle-inline">
+        <div class="playback-toggle-item">
           <label for="playLoop">Loop</label>
           <label class="toggle"><input type="checkbox" id="playLoop" /><span class="slider"></span></label>
         </div>
-        <div class="field-row span-2 playback-toggle-row">
+        <div class="playback-toggle-item">
           <label for="playSingleClip">Single Clip</label>
           <label class="toggle"><input type="checkbox" id="playSingleClip" /><span class="slider"></span></label>
         </div>
@@ -237,30 +233,14 @@
     <div class="card">
       <h2 class="card__title">Transport State</h2>
       <div class="dash-grid">
-        <div class="dash-cell"><div class="dash-cell__label">Status</div>
-          <div class="dash-cell__value"><span class="status-badge" id="dashStatus">—</span></div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Speed</div>
-          <div class="dash-cell__value" id="dashSpeed">—</div></div>
         <div class="dash-cell"><div class="dash-cell__label">Clip ID</div>
           <div class="dash-cell__value" id="dashClipId">—</div></div>
         <div class="dash-cell"><div class="dash-cell__label">Slot ID</div>
           <div class="dash-cell__value" id="dashSlotId">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Slot Name</div>
-          <div class="dash-cell__value" id="dashSlotName">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Device Name</div>
-          <div class="dash-cell__value" id="dashDevName">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Video Format</div>
-          <div class="dash-cell__value" id="dashVidFmt">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Loop</div>
-          <div class="dash-cell__value" id="dashLoop">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Single Clip</div>
-          <div class="dash-cell__value" id="dashSingleClip">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Timeline</div>
+        <div class="dash-cell"><div class="dash-cell__label">Timeline Position (frame)</div>
           <div class="dash-cell__value" id="dashTimeline">—</div></div>
         <div class="dash-cell"><div class="dash-cell__label">Dynamic Range</div>
           <div class="dash-cell__value" id="dashDynRange">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Ref Locked</div>
-          <div class="dash-cell__value" id="dashRefLocked">—</div></div>
       </div>
     </div>
 
@@ -366,44 +346,6 @@
         <button class="btn btn--primary" onclick="applyPlayrangeSet()">Set Range</button>
         <button class="btn btn--sm" onclick="sendCmd('playrange')">↻ Query</button>
         <button class="btn btn--sm btn--danger" onclick="sendCmd('playrange clear')">Clear</button>
-      </div>
-    </div>
-
-    <!-- Play on Startup -->
-    <div class="card">
-      <h2 class="card__title">Play on Startup</h2>
-      <p class="hint">Determines deck behaviour on power-up.</p>
-      <div class="field-grid">
-        <div class="field-row">
-          <label for="posEnable">Enable</label>
-          <label class="toggle"><input type="checkbox" id="posEnable" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="posSingleClip">Single Clip</label>
-          <label class="toggle"><input type="checkbox" id="posSingleClip" /><span class="slider"></span></label>
-        </div>
-      </div>
-      <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applyPlayOnStartup()">Apply</button>
-        <button class="btn btn--sm" onclick="sendCmd('play on startup')">↻ Query</button>
-      </div>
-    </div>
-
-    <!-- Play Option -->
-    <div class="card">
-      <h2 class="card__title">Play Option</h2>
-      <p class="hint">Determines which frame is displayed when playback stops.</p>
-      <div class="field-row">
-        <label for="stopMode">Stop Mode</label>
-        <select id="stopMode">
-          <option value="lastframe">lastframe  (default)</option>
-          <option value="nextframe">nextframe</option>
-          <option value="black">black</option>
-        </select>
-      </div>
-      <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applyPlayOption()">Apply</button>
-        <button class="btn btn--sm" onclick="sendCmd('play option')">↻ Query</button>
       </div>
     </div>
 
@@ -908,6 +850,44 @@
       </div>
     </div>
 
+    <!-- Play on Startup -->
+    <div class="card">
+      <h2 class="card__title">Play on Startup</h2>
+      <p class="hint">Determines deck behaviour on power-up.</p>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="posEnable">Enable</label>
+          <label class="toggle"><input type="checkbox" id="posEnable" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="posSingleClip">Single Clip</label>
+          <label class="toggle"><input type="checkbox" id="posSingleClip" /><span class="slider"></span></label>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applyPlayOnStartup()">Apply</button>
+        <button class="btn btn--sm" onclick="sendCmd('play on startup')">↻ Query</button>
+      </div>
+    </div>
+
+    <!-- Play Option -->
+    <div class="card">
+      <h2 class="card__title">Play Option</h2>
+      <p class="hint">Determines which frame is displayed when playback stops.</p>
+      <div class="field-row">
+        <label for="stopMode">Stop Mode</label>
+        <select id="stopMode">
+          <option value="lastframe">lastframe  (default)</option>
+          <option value="nextframe">nextframe</option>
+          <option value="black">black</option>
+        </select>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--primary btn--sm" onclick="applyPlayOption()">Apply</button>
+        <button class="btn btn--sm" onclick="sendCmd('play option')">↻ Query</button>
+      </div>
+    </div>
+
     <!-- Connection Protocol -->
     <div class="card">
       <h2 class="card__title">Connection Protocol</h2>
@@ -1278,6 +1258,9 @@
         <div class="btn-row">
           <label style="font-size:.78em;color:var(--text-secondary);display:flex;align-items:center;gap:4px">
             <input type="checkbox" id="consoleAutoScroll" checked /> Auto-scroll
+          </label>
+          <label style="font-size:.78em;color:var(--text-secondary);display:flex;align-items:center;gap:4px">
+            <input type="checkbox" id="consoleHide208" /> Hide 208
           </label>
           <button class="btn btn--xs" onclick="clearConsole()">Clear</button>
         </div>

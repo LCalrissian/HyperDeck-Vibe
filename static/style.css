@@ -185,6 +185,25 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
   flex: 0 0 136px;
 }
 
+.playback-toggle-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm) var(--sp-lg);
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.playback-toggle-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.playback-toggle-item > label:first-child {
+  color: var(--text-secondary);
+  font-size: .82em;
+}
+
 input[type=text], input[type=number], input[type=password], select, textarea {
   flex: 1; background: var(--bg-input); border: 1px solid var(--border);
   border-radius: var(--r-sm); color: var(--text-primary);
@@ -292,7 +311,7 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
   font-size: 1em;
   letter-spacing: -0.08em;
 }
-.tbtn--play   { background: var(--st-play);   border-color: var(--st-play);   color: #fff; filter: brightness(.82); }
+.tbtn--play   { background: #2e3038; }
 .tbtn--stop   { background: #2e3038; }
 .tbtn--record { background: var(--st-record); border-color: var(--st-record); color: #fff; filter: brightness(.82); }
 .tbtn--record-no-input {
@@ -312,7 +331,16 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
   animation: transport-btn-active-pulse 1.9s ease-in-out infinite;
 }
 .tbtn--active-play {
+  background: var(--st-play);
+  border-color: var(--st-play);
+  color: #fff;
   box-shadow: 0 0 0 1px rgba(255,255,255,.16), 0 0 14px rgba(60,179,113,.55);
+}
+.tbtn--active-stop {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.16), 0 0 14px rgba(74,144,217,.55);
 }
 .tbtn--active-record {
   box-shadow: 0 0 0 1px rgba(255,255,255,.16), 0 0 14px rgba(232,84,84,.55);
@@ -370,6 +398,11 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 .status-badge.forward  { background: var(--st-forward); color: #000; }
 .status-badge.rewind   { background: var(--st-rewind);  color: #000; }
 .status-badge.stopped  { background: var(--bg-hover);   color: var(--text-secondary); }
+.status-badge--stopped-alert {
+  background: var(--st-record) !important;
+  color: #fff !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 0 10px rgba(217, 64, 64, .45);
+}
 
 /* ── Sidebar info table ───────────────────────────────────── */
 .info-table { width: 100%; border-collapse: collapse; font-size: .82em; }
@@ -550,5 +583,6 @@ hr.divider {
   .sidebar { width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid var(--border); }
   #sidebarDeviceSection { display: none !important; }
   .field-grid { grid-template-columns: 1fr; }
+  .playback-toggle-inline { gap: var(--sp-xs) var(--sp-md); }
 }
 
