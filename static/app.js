@@ -12,7 +12,7 @@
  * Response code summary (see backend for full table):
  *   200 ok | 201 help | 202 slot info | 204 device info | 205 clips info
  *   206 disk list | 208 transport info | 209 notify | 210 remote info
- *   211 configuration | 212 commands | 213 deck rebooting | 214 clips count
+ *   211 configuration | 212 commands | 213 deck rebooting
  *   225 nas host info | 226 external drive info
  *   Async: 500 connection info | 502 slot | 508 transport | 510 remote
  *          511 configuration | 519 clips | 520 disk list
@@ -57,8 +57,15 @@ const STOPPED_NOTIFY_REFRESH_DELAY_MS = 120;
 let transportTransitionDeadlineMs = 0;
 let stoppedNotifyRefreshTimeoutId = null;
 let lastObservedClipId = "";
+let lastObservedTransportSlotId = "";
+let lastObservedTimelineSlotId = "";
+let lastTimelineClipsKv = null;
+const knownSlotStates = {};
 let lastRecordAttemptAtMs = 0;
 let hasTransportStateHydratedForSession = false;
+let pendingNoInputSourceLookup = false;
+let noInputSourceLookupTimeoutId = null;
+const NO_INPUT_SOURCE_LOOKUP_TIMEOUT_MS = 1_200;
 
 /**
  * Local playback option state used to compose transport commands.
@@ -86,6 +93,15 @@ let lastConnectionProfilesRenderKey = "";
 
 const MAX_CONSOLE_LINES = 500;
 let suppressCurrent208RawConsoleBlock = false;
+const UI_PREFERENCES_STORAGE_KEY = "hyperdeckVibe.uiPreferences";
+
+const uiPreferences = {
+  showDynamicRangeInTransportInfo: true,
+  showTransportJog: true,
+  showTransportShuttle: true,
+  showTransportGoto: true,
+  showTransportPlayRange: true,
+};
 
 // ============================================================
 // SECTION: WebSocket management
@@ -165,6 +181,9 @@ function handleServerMessage(message) {
 
     case "disconnected":
       hasTransportStateHydratedForSession = false;
+      for (const key of Object.keys(knownSlotStates)) {
+        delete knownSlotStates[key];
+      }
       updateConnectionUI(false);
       stopWatchdog();
       stopTransportAutoRefresh();
@@ -298,6 +317,8 @@ function handleParsedResponse(code, text, kv) {
     case 202:
     case 502:
       displayResultBox("slotInfoResult", kv);
+      updateKnownSlotStateFromResponse(kv);
+      renderCurrentSlotSwitcher(deviceState);
       break;
 
     // ── 204  device info ───────────────────────────────────────────────
@@ -306,14 +327,25 @@ function handleParsedResponse(code, text, kv) {
 
     // ── 205 / 519  clips info ──────────────────────────────────────────
     case 205:
-    case 519:
+      lastTimelineClipsKv = kv;
       renderClipsTable(kv);
+      break;
+
+    case 519:
+      lastTimelineClipsKv = kv;
+      renderClipsTable(kv);
+      // 519 snapshot responses (rebuild, remove, etc.) lack proper durations.
+      // Automatically follow up with clips get to get accurate clip info.
+      if (String(kv["update type"] || "").trim().toLowerCase() === "snapshot") {
+        applyClipsGet();
+      }
       break;
 
     // ── 206 / 520  disk list ───────────────────────────────────────────
     case 206:
     case 520:
       displayResultBox("diskListResult", kv);
+      maybeRenderCurrentSlotMediaTable(kv);
       break;
 
     // ── 208 / 508  transport info ──────────────────────────────────────
@@ -369,6 +401,7 @@ function handleParsedResponse(code, text, kv) {
     case 211:
     case 511:
       applyConfigurationToFormFields(kv);
+      maybeResolveNoInputSourceLookup(kv);
       break;
 
     // ── 212  commands (XML) ────────────────────────────────────────────
@@ -381,14 +414,6 @@ function handleParsedResponse(code, text, kv) {
       showToast("Deck is rebooting…", "warn");
       consoleLog("⚠ Deck rebooting (file format change)", "cl--async");
       break;
-
-    // ── 214  clips count ───────────────────────────────────────────────
-    case 214: {
-      const count = kv["clips count"] || kv["count"] || "?";
-      showToast(`Clips count: ${count}`, "ok");
-      updateClipCountBadge(count);
-      break;
-    }
 
     // ── 225  nas host info ─────────────────────────────────────────────
     case 225:
@@ -419,14 +444,56 @@ function handleParsedResponse(code, text, kv) {
   }
 
   if (code === 110 && Date.now() - lastRecordAttemptAtMs < 4000) {
-    window.alert("No Input");
+    triggerNoInputSourceLookup();
   }
 
   // Display error responses with descriptive messages
-  if (code >= 100 && code <= 199) {
+  if (code >= 100 && code <= 199 && code !== 110) {
     const description = ERROR_CODE_DESCRIPTIONS[code] || "Error";
     showToast(`${code} ${description}`, "error");
   }
+}
+
+function clearNoInputSourceLookupTimeout() {
+  if (noInputSourceLookupTimeoutId !== null) {
+    clearTimeout(noInputSourceLookupTimeoutId);
+    noInputSourceLookupTimeoutId = null;
+  }
+}
+
+function normalizeInputLabel(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
+function triggerNoInputSourceLookup() {
+  pendingNoInputSourceLookup = true;
+  clearNoInputSourceLookupTimeout();
+
+  noInputSourceLookupTimeoutId = setTimeout(() => {
+    if (!pendingNoInputSourceLookup) return;
+    pendingNoInputSourceLookup = false;
+    noInputSourceLookupTimeoutId = null;
+    window.alert("No Input");
+    showToast("No Input", "error");
+  }, NO_INPUT_SOURCE_LOOKUP_TIMEOUT_MS);
+
+  sendCmd("configuration", { quiet: true });
+}
+
+function maybeResolveNoInputSourceLookup(kv = {}) {
+  if (!pendingNoInputSourceLookup) return;
+
+  const selectedInput = normalizeInputLabel(kv["video input"] || deviceState.cfg_video_input);
+  const message = selectedInput ? `No Input on ${selectedInput}` : "No Input";
+
+  pendingNoInputSourceLookup = false;
+  clearNoInputSourceLookupTimeout();
+
+  window.alert(message);
+  showToast(message, "error");
 }
 
 // ============================================================
@@ -487,6 +554,12 @@ function applyStateToUI(state) {
   );
 
   setText("tsFormat",     state.transport_video_format    || "—");
+  const tsPlayRangeRowEl = document.getElementById("tsPlayRangeRow");
+  const tsPlayRangeEl = document.getElementById("tsPlayRange");
+  if (tsPlayRangeEl && tsPlayRangeRowEl) {
+    tsPlayRangeEl.textContent = "PLAY RANGE SET";
+    tsPlayRangeEl.className = "status-badge playrange-set";
+  }
   if (state.is_connected !== true) {
     setText("tsStatus", "—");
     const tsStatusEl = document.getElementById("tsStatus");
@@ -494,6 +567,9 @@ function applyStateToUI(state) {
     const tsFormatEl = document.getElementById("tsFormat");
     setText("tsFormat", "—");
     if (tsFormatEl) tsFormatEl.className = "status-badge stopped";
+    if (tsPlayRangeRowEl) {
+      tsPlayRangeRowEl.hidden = true;
+    }
   }
   syncTransportActionButtons(state);
 
@@ -501,6 +577,11 @@ function applyStateToUI(state) {
   setText("dashSpeed",      formatSpeed(state.transport_speed));
   setText("dashClipId",     state.transport_clip_id         || "—");
   setText("dashSlotId",     formatSlot(state));
+  const mediaSlotId = normalizeDisplayNone(state.transport_slot_id);
+  const mediaSlotLabel = isDisplayNoneToken(mediaSlotId)
+    ? "None"
+    : (mediaSlotId ? `Slot ${mediaSlotId}` : "—");
+  setText("currentSlotMediaSlotId", state.is_connected === true ? mediaSlotLabel : "—");
   setText("dashSlotName",   state.transport_slot_name       || "—");
   setText("dashDevName",    state.transport_device_name     || "—");
   setText("dashVidFmt",     state.transport_video_format    || "—");
@@ -572,25 +653,205 @@ function applyStateToUI(state) {
 
   maybeSyncConnectedModel(state);
   maybeRefreshAfterClipIdChange(state);
+  maybeRefreshTimelineClipsAfterSlotChange(state);
+  maybeRefreshCurrentSlotMediaAfterSlotChange(state);
+  renderCurrentSlotSwitcher(state);
   syncTransportAutoRefresh(state);
+
+  // ── Play Range status ─────────────────────────────────────────────────
+  {
+    const statusEl = document.getElementById("playrangeStatus");
+    const pillEl   = document.getElementById("playrangeStatusPill");
+    const detailEl = document.getElementById("playrangeStatusDetail");
+    if (statusEl && pillEl && detailEl) {
+      const pr = state.playrange_active;
+      statusEl.className = "playrange-status " + (
+        pr === true  ? "playrange-status--set"   :
+        pr === false ? "playrange-status--clear" :
+                       "playrange-status--unknown"
+      );
+      if (pr === true) {
+        pillEl.textContent = "Range Active";
+        const parts = [];
+        if (state.playrange_clip_id) {
+          parts.push(`Clip ${state.playrange_clip_id}${state.playrange_count ? " × " + state.playrange_count : ""}`);
+        }
+        if (state.playrange_in)           parts.push(`In: ${state.playrange_in}`);
+        if (state.playrange_out)          parts.push(`Out: ${state.playrange_out}`);
+        if (state.playrange_timeline_in)  parts.push(`TL In: ${state.playrange_timeline_in}`);
+        if (state.playrange_timeline_out) parts.push(`TL Out: ${state.playrange_timeline_out}`);
+        detailEl.textContent = parts.join("  ·  ");
+      } else if (pr === false) {
+        pillEl.textContent = "No Range Set";
+        detailEl.textContent = "";
+      } else {
+        pillEl.textContent = "—";
+        detailEl.textContent = "";
+      }
+
+      // Keep dashboard sidebar badge in lock-step with this transport card indicator.
+      const tsPlayRangeRowEl = document.getElementById("tsPlayRangeRow");
+      const tsPlayRangeEl = document.getElementById("tsPlayRange");
+      const playbackPlayRangeBadgeEl = document.getElementById("playbackPlayRangeSetBadge");
+      if (tsPlayRangeRowEl && tsPlayRangeEl) {
+        const transportShowsRangeActive = statusEl.classList.contains("playrange-status--set");
+        tsPlayRangeEl.textContent = "PLAY RANGE SET";
+        tsPlayRangeEl.className = "status-badge playrange-set";
+        tsPlayRangeRowEl.hidden = !transportShowsRangeActive;
+
+        if (playbackPlayRangeBadgeEl) {
+          playbackPlayRangeBadgeEl.textContent = "PLAY RANGE SET";
+          playbackPlayRangeBadgeEl.className = "status-badge playrange-set playback-playrange-indicator";
+          playbackPlayRangeBadgeEl.hidden = !transportShowsRangeActive;
+        }
+      }
+    }
+  }
 }
 
 function maybeRefreshAfterClipIdChange(state) {
   const currentClipId = String(state.transport_clip_id || "").trim();
-  if (!currentClipId) {
-    lastObservedClipId = "";
-    return;
-  }
-
   if (currentClipId === lastObservedClipId) {
     return;
   }
 
   lastObservedClipId = currentClipId;
 
+  const clipsTab = document.getElementById("tab-clips");
+  const clipsTabIsActive = Boolean(clipsTab?.classList.contains("active"));
+  if (clipsTabIsActive && lastTimelineClipsKv) {
+    renderClipsTable(lastTimelineClipsKv);
+  }
+
+  if (!currentClipId) {
+    return;
+  }
+
   // Clip changes can precede timecode stabilization by a few frames.
   requestTransportRefresh();
   setTimeout(() => requestTransportRefresh(), 250);
+}
+
+function maybeRefreshCurrentSlotMediaAfterSlotChange(state) {
+  const currentSlotId = normalizeDisplayNone(state.transport_slot_id);
+  if (!currentSlotId || isDisplayNoneToken(currentSlotId)) {
+    lastObservedTransportSlotId = "";
+    renderCurrentSlotMediaTable({});
+    return;
+  }
+
+  if (currentSlotId === lastObservedTransportSlotId) {
+    return;
+  }
+
+  lastObservedTransportSlotId = currentSlotId;
+
+  const slotsTab = document.getElementById("tab-slots");
+  const slotsTabIsActive = Boolean(slotsTab?.classList.contains("active"));
+  if (!slotsTabIsActive || state.is_connected !== true) {
+    return;
+  }
+
+  loadCurrentSlotMedia();
+}
+
+function maybeRefreshTimelineClipsAfterSlotChange(state) {
+  const currentSlotId = normalizeDisplayNone(state.transport_slot_id);
+  if (!currentSlotId || isDisplayNoneToken(currentSlotId)) {
+    lastObservedTimelineSlotId = "";
+    return;
+  }
+
+  if (currentSlotId === lastObservedTimelineSlotId) {
+    return;
+  }
+
+  lastObservedTimelineSlotId = currentSlotId;
+
+  const clipsTab = document.getElementById("tab-clips");
+  const clipsTabIsActive = Boolean(clipsTab?.classList.contains("active"));
+  if (!clipsTabIsActive || state.is_connected !== true) {
+    return;
+  }
+
+  applyClipsGet();
+}
+
+function updateKnownSlotStateFromResponse(kv) {
+  const rawSlotId = normalizeDisplayNone(kv["slot id"]);
+  if (!rawSlotId || isDisplayNoneToken(rawSlotId)) {
+    return;
+  }
+
+  const slotId = String(rawSlotId).trim();
+  if (!knownSlotStates[slotId]) {
+    knownSlotStates[slotId] = { status: "", slotName: "", device: "" };
+  }
+
+  if (kv["status"] !== undefined) {
+    knownSlotStates[slotId].status = String(kv["status"] || "").trim().toLowerCase();
+  }
+  if (kv["slot name"] !== undefined) {
+    knownSlotStates[slotId].slotName = normalizeDisplayNone(kv["slot name"]);
+  }
+  if (kv["device name"] !== undefined || kv["device"] !== undefined) {
+    const nextDevice = kv["device name"] !== undefined ? kv["device name"] : kv["device"];
+    knownSlotStates[slotId].device = normalizeDisplayNone(nextDevice);
+  }
+}
+
+function loadAllSlotStates() {
+  const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
+  if (!Number.isInteger(slotCount) || slotCount < 1) {
+    return;
+  }
+
+  for (let i = 1; i <= slotCount; i += 1) {
+    sendCmd(`slot info: slot id: ${i}`, { quiet: true });
+  }
+}
+
+function renderCurrentSlotSwitcher(state) {
+  const hostEl = document.getElementById("currentSlotSwitcher");
+  if (!hostEl) return;
+
+  const slotCount = Number.parseInt(String(state.slot_count || 0), 10);
+  if (!Number.isInteger(slotCount) || slotCount < 1) {
+    hostEl.innerHTML = "";
+    return;
+  }
+
+  const activeSlot = normalizeDisplayNone(state.transport_slot_id);
+
+  hostEl.innerHTML = Array.from({ length: slotCount }, (_, idx) => {
+    const slotId = String(idx + 1);
+    const slotState = knownSlotStates[slotId] || {};
+    const status = String(slotState.status || "").toLowerCase();
+    const isEmpty = status === "empty";
+    const isActive = activeSlot === slotId;
+    const label = slotState.slotName ? `Slot ${slotId} (${slotState.slotName})` : `Slot ${slotId}`;
+
+    const classes = ["slot-switcher__btn"];
+    if (isActive) classes.push("slot-switcher__btn--active");
+    if (isEmpty) classes.push("slot-switcher__btn--disabled");
+
+    return `<button
+      class="${classes.join(" ")}"
+      data-slot-id="${slotId}"
+      ${isEmpty ? "disabled" : ""}
+      title="${isEmpty ? "Slot empty" : "Make active slot"}">
+      ${escHtml(label)}
+    </button>`;
+  }).join("");
+
+  for (const btn of hostEl.querySelectorAll("button[data-slot-id]")) {
+    btn.addEventListener("click", () => {
+      const slotId = String(btn.getAttribute("data-slot-id") || "").trim();
+      if (!slotId || btn.disabled) return;
+      sendCmd(`slot select: slot id: ${slotId}`);
+      showToast(`Selecting slot ${slotId}…`, "ok");
+    });
+  }
 }
 
 function updateDashboardRemoteToggle(isEnabled) {
@@ -865,6 +1126,23 @@ function onSidebarRemoteIndicatorClick(event) {
   }
 
   toggleDashboardRemote();
+}
+
+function jumpToPlayRangeSection(event) {
+  event?.stopPropagation();
+
+  // Ensure the section is visible and keep the Config toggle mirrored.
+  uiPreferences.showTransportPlayRange = true;
+  saveUiPreferences();
+  applyUiPreferencesToUI();
+
+  activateTab("transport");
+
+  const playRangeCard = document.getElementById("transportPlayRangeCard");
+  if (playRangeCard) {
+    playRangeCard.hidden = false;
+    playRangeCard.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function findSavedConnectionName(host, port) {
@@ -1506,16 +1784,17 @@ function applyPreview() {
 // SECTION: Clip commands
 // ============================================================
 
-/** Build and send a "clips get" command with optional version, clip id, count. */
+/** Build and send a "clips get" command with optional response version. */
 function applyClipsGet() {
   const opts = {};
-  const version = document.getElementById("clipsGetVersion").value;
-  const clipId  = document.getElementById("clipsGetClipId").value.trim();
-  const count   = document.getElementById("clipsGetCount").value.trim();
+  const version = document.getElementById("clipsGetVersion")?.value || "";
   if (version) opts.version = version;
-  if (clipId)  opts["clip id"] = clipId;
-  if (count)   opts.count = count;
   sendCmd(buildInlineCommand("clips get", opts));
+}
+
+/** Send "clips rebuild". The 519 snapshot response will automatically trigger a clips get. */
+function applyClipsRebuild() {
+  sendCmd("clips rebuild");
 }
 
 /** Build and send a "clip info" command. */
@@ -1554,13 +1833,6 @@ function applyClipAdd() {
   sendCmd(buildInlineCommand("clips add", opts));
 }
 
-/** Build and send a "clips remove" command. */
-function applyClipRemove() {
-  const clipId = document.getElementById("clipRemoveId").value.trim();
-  if (!clipId) { showToast("Enter a Clip ID to remove", "error"); return; }
-  sendCmd(`clips remove: clip id: ${clipId}`);
-}
-
 /** Ask for confirmation then send "clips clear". */
 function confirmClipsClear() {
   if (confirm("Clear the entire timeline? This cannot be undone.")) {
@@ -1571,7 +1843,7 @@ function confirmClipsClear() {
 /** Build and send a "record" command with optional clip name. */
 function applyRecord() {
   if (hasNoInputCondition(deviceState)) {
-    window.alert("No Input");
+    triggerNoInputSourceLookup();
     return;
   }
 
@@ -1586,18 +1858,23 @@ function applyRecordSpill() {
   sendCmd(slotId ? `record: spill: slot id: ${slotId}` : "record spill");
 }
 
+function looksLikeV2ClipEntry(data) {
+  const fields = String(data || "").trim().split(/\s+/);
+  const looksLikeTimecode = (value) => /^\d{2}:\d{2}:\d{2}[:;]\d{2}$/.test(String(value || "").trim());
+
+  return fields.length >= 5
+    && looksLikeTimecode(fields[0])
+    && looksLikeTimecode(fields[1])
+    && looksLikeTimecode(fields[2])
+    && looksLikeTimecode(fields[3]);
+}
+
 /**
  * Render the clips table from a 205 / 519 clips info response.
  * kv keys are clip IDs (integers); values are space-separated fields.
  *
  * Protocol version 1 (default): "id: {name} {startTC} {duration}"
- * Protocol version 2: "id: {name} {clipStartTC} {duration} {inTC} {outTC} {path}"
- *
- * The spec returns indexed entries like:
- *   205 clips info:\n
- *   clip count: 4\n
- *   0: name start_tc duration\n
- *   1: name start_tc duration\n
+ * Protocol version 2: "id: {clipStartTC} {clipDuration} {inTC} {outTC} {path}"
  */
 function renderClipsTable(kv) {
   const tbody = document.getElementById("clipsTableBody");
@@ -1611,8 +1888,21 @@ function renderClipsTable(kv) {
   const count = kv["clip count"] || clipEntries.length;
   updateClipCountBadge(count);
 
+  // Some decks return 519 rebuild snapshots in v2-style regardless of the selected dropdown.
+  // Trust the payload shape first; only fall back to the dropdown when there are no rows to inspect.
+  const selectedVersion = document.getElementById("clipsGetVersion")?.value || "";
+  const requestedV2 = selectedVersion === "2" || selectedVersion === "3";
+  const payloadLooksV2 = clipEntries.some(([, data]) => looksLikeV2ClipEntry(data));
+  const isV2 = payloadLooksV2 || (clipEntries.length === 0 && requestedV2);
+  const table = document.getElementById("clipsTable");
+  if (table) {
+    table.classList.toggle("clip-table--v1", !isV2);
+    table.classList.toggle("clip-table--v2", isV2);
+  }
+  const colSpan = isV2 ? 5 : 6; // includes left Play + right Remove columns
+
   if (clipEntries.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:10px">
+    tbody.innerHTML = `<tr><td colspan="${colSpan}" style="color:var(--text-muted);text-align:center;padding:10px">
       Timeline is empty (107).</td></tr>`;
     return;
   }
@@ -1620,22 +1910,36 @@ function renderClipsTable(kv) {
   const activeClipId = deviceState.transport_clip_id
     ? parseInt(deviceState.transport_clip_id, 10)
     : -1;
+  const clipIdOffset = clipEntries.some(([idx]) => String(idx).trim() === "0") ? 1 : 0;
 
   tbody.innerHTML = clipEntries.map(([idx, data]) => {
-    // Fields are space-separated; clip name may contain spaces so we split carefully
     const fields = data.trim().split(/\s+/);
-    // idx is 0-based in the response, clip id is 1-based for commands
-    const clipId = parseInt(idx, 10) + 1;
-    const name       = fields[0] || "—";
-    const startTc    = fields[1] || "—";
-    const duration   = fields[2] || "—";
-    const inTc       = fields[3] || "";
-    const outTc      = fields[4] || "";
+    const clipId = parseInt(idx, 10) + clipIdOffset;
+
+    let name, startTc, duration, inTc, outTc;
+    if (isV2) {
+      // v2/v3: clipStartTC clipDuration inTC outTC filename...
+      startTc  = fields[0] || "";                      // always 00:00:00;00 — hidden
+      duration = fields[1] || "—";
+      inTc     = fields[2] || "";                      // always 00:00:00;00 — hidden
+      outTc    = fields[3] || "";
+      name     = fields.slice(4).join(" ") || "—";    // filename (may include folder path)
+    } else {
+      // v1: name startTC duration
+      name     = fields[0] || "—";
+      startTc  = fields[1] || "—";
+      duration = fields[2] || "—";
+      inTc     = "";
+      outTc    = "";
+    }
 
     const isActive = (clipId === activeClipId);
     const rowClass = isActive ? "clip--active" : "";
 
     return `<tr class="${rowClass}">
+      <td class="clip-actions">
+        <button class="btn btn--xs btn--play-icon" onclick="playTimelineClip(${clipId})" title="Play this clip"> </button>
+      </td>
       <td>${clipId}</td>
       <td class="clip-name" title="${escHtml(name)}">${escHtml(name)}</td>
       <td>${escHtml(startTc)}</td>
@@ -1643,11 +1947,123 @@ function renderClipsTable(kv) {
       <td>${escHtml(inTc)}</td>
       <td>${escHtml(outTc)}</td>
       <td class="clip-actions">
-        <button class="btn btn--xs" onclick="gotoClip(${clipId})" title="Go to clip">Go</button>
         <button class="btn btn--xs btn--danger" onclick="removeClip(${clipId})" title="Remove from timeline">✕</button>
       </td>
     </tr>`;
   }).join("");
+
+  // Single-click a timeline row to cue that clip.
+  for (const row of tbody.querySelectorAll("tr")) {
+    const idCell = row.querySelector("td:nth-child(2)");
+    if (!idCell) continue;
+    const clipId = parseInt(String(idCell.textContent || "").trim(), 10);
+    if (!Number.isInteger(clipId)) continue;
+    row.title = "Click to cue this clip";
+    row.addEventListener("click", (event) => {
+      if (event.target && event.target.closest("button")) return;
+      gotoClip(clipId);
+    });
+  }
+}
+
+function parseDiskListEntry(data) {
+  const raw = String(data || "").trim();
+  const fields = raw.split(/\s+/).filter(Boolean);
+  const looksLikeDuration = (value) => /^(\d+|\d{2}:\d{2}:\d{2}:\d{2})$/.test(String(value || ""));
+
+  if (fields.length < 4) {
+    return {
+      name: raw || "—",
+      codec: "—",
+      format: "—",
+      duration: "—",
+    };
+  }
+
+  // Version 2 style: codec format duration folder/filename
+  if (looksLikeDuration(fields[2])) {
+    return {
+      name: fields.slice(3).join(" ") || "—",
+      codec: fields[0] || "—",
+      format: fields[1] || "—",
+      duration: fields[2] || "—",
+    };
+  }
+
+  // Version 1 style: filename codec format duration
+  return {
+    name: fields[0] || "—",
+    codec: fields[1] || "—",
+    format: fields[2] || "—",
+    duration: fields.slice(3).join(" ") || "—",
+  };
+}
+
+function renderCurrentSlotMediaTable(kv) {
+  const tbody = document.getElementById("currentSlotMediaTableBody");
+  if (!tbody) return;
+
+  const mediaEntries = Object.entries(kv)
+    .filter(([key]) => /^\d+$/.test(key))
+    .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10));
+
+  if (mediaEntries.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="table-cell-empty">
+      No media entries returned for current slot.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = mediaEntries.map(([idx, data]) => {
+    const parsed = parseDiskListEntry(data);
+    return `<tr>
+      <td>${escHtml(idx)}</td>
+      <td class="clip-name" title="${escHtml(parsed.name)}">${escHtml(parsed.name)}</td>
+      <td>${escHtml(parsed.codec)}</td>
+      <td>${escHtml(parsed.format)}</td>
+      <td>${escHtml(parsed.duration)}</td>
+    </tr>`;
+  }).join("");
+
+  // Double-click any media row to append that clip to the timeline.
+  for (const row of tbody.querySelectorAll("tr")) {
+    const nameCell = row.querySelector("td:nth-child(2)");
+    if (!nameCell) continue;
+    const clipName = String(nameCell.textContent || "").trim();
+    if (!clipName || clipName === "—") continue;
+    row.title = "Double-click to append this clip to timeline";
+    row.addEventListener("dblclick", () => appendCurrentSlotMediaClipToTimeline(clipName));
+  }
+}
+
+function maybeRenderCurrentSlotMediaTable(kv) {
+  const responseSlotId = normalizeDisplayNone(kv["slot id"]);
+  const activeSlotId = normalizeDisplayNone(deviceState.transport_slot_id);
+
+  if (activeSlotId) {
+    // Keep Current Slot Media bound to active slot only; ignore background
+    // disk notifications for non-active slots.
+    if (!responseSlotId || responseSlotId === activeSlotId) {
+      renderCurrentSlotMediaTable(kv);
+    }
+    return;
+  }
+
+  if (isDisplayNoneToken(deviceState.transport_slot_id)) {
+    if (!responseSlotId || isDisplayNoneToken(responseSlotId)) {
+      renderCurrentSlotMediaTable(kv);
+    }
+  }
+}
+
+function loadCurrentSlotMedia() {
+  sendCmd("disk list");
+}
+
+function appendCurrentSlotMediaClipToTimeline(clipName) {
+  const name = String(clipName || "").trim();
+  if (!name || name === "—") return;
+  sendCmd(buildInlineCommand("clips add", { name }));
+  showToast(`Appended ${name} to timeline`, "ok");
 }
 
 /** Update the clip count badge in the Clips tab header. */
@@ -1662,6 +2078,12 @@ function updateClipCountBadge(count) {
 
 /** Shortcut used by clip table "Go" buttons. */
 function gotoClip(clipId) { sendCmd(`goto: clip id: ${clipId}`); }
+
+/** Play a specific timeline clip in single-clip mode. */
+function playTimelineClip(clipId) {
+  if (!Number.isInteger(clipId)) return;
+  sendCmd(`play: clip id: ${clipId} single clip: true`);
+}
 
 /** Shortcut used by clip table "✕" buttons. */
 function removeClip(clipId) { sendCmd(`clips remove: clip id: ${clipId}`); }
@@ -2259,6 +2681,15 @@ function activateTab(tabName) {
   document.querySelectorAll(".tab-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.id === `tab-${tabName}`);
   });
+
+  if (tabName === "clips" && deviceState.is_connected === true) {
+    applyClipsGet();
+  }
+
+  if (tabName === "slots" && deviceState.is_connected === true) {
+    loadAllSlotStates();
+    loadCurrentSlotMedia();
+  }
 }
 
 // ============================================================
@@ -2399,6 +2830,25 @@ function setSelectIfKnown(id, value) {
   if (opt) el.value = opt.value;
 }
 
+function normalizeDisplayNone(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (lower === "null" || lower === "n/a") return "";
+  return raw;
+}
+
+function isDisplayNoneToken(value) {
+  return String(value || "").trim().toLowerCase() === "none";
+}
+
+function formatSlotIdDisplay(value) {
+  const normalized = normalizeDisplayNone(value);
+  if (!normalized) return "—";
+  if (isDisplayNoneToken(normalized)) return "None";
+  return normalized;
+}
+
 /** Format transport speed as a human-readable percentage string. */
 function formatSpeed(speed) {
   if (speed === undefined || speed === null || speed === "") return "—";
@@ -2409,16 +2859,19 @@ function formatSpeed(speed) {
 
 /** Format slot id + slot name into a combined display string. */
 function formatSlot(state) {
-  const id = String(state.transport_slot_id || "").trim();
-  const slotName = String(state.transport_slot_name || "").trim();
-  const deviceName = String(state.transport_device_name || "").trim();
+  const id = normalizeDisplayNone(state.transport_slot_id);
+  const slotName = normalizeDisplayNone(state.transport_slot_name);
+  const deviceName = normalizeDisplayNone(state.transport_device_name);
 
   const normalizedSlotName = slotName.toLowerCase();
   const normalizedDeviceName = deviceName.toLowerCase();
   const shouldAppendDevice =
     deviceName && normalizedDeviceName !== normalizedSlotName;
 
-  let label = id;
+  let label = formatSlotIdDisplay(id);
+  if (label === "—") {
+    label = "";
+  }
   if (slotName) {
     label = label ? `${label} - ${slotName}` : slotName;
   }
@@ -2443,6 +2896,90 @@ function boolEnabledDisabled(value) {
   return "—";
 }
 
+function loadUiPreferences() {
+  try {
+    const raw = localStorage.getItem(UI_PREFERENCES_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.showDynamicRangeInTransportInfo === "boolean") {
+      uiPreferences.showDynamicRangeInTransportInfo = parsed.showDynamicRangeInTransportInfo;
+    }
+    if (typeof parsed.showTransportJog === "boolean") {
+      uiPreferences.showTransportJog = parsed.showTransportJog;
+    }
+    if (typeof parsed.showTransportShuttle === "boolean") {
+      uiPreferences.showTransportShuttle = parsed.showTransportShuttle;
+    }
+    if (typeof parsed.showTransportGoto === "boolean") {
+      uiPreferences.showTransportGoto = parsed.showTransportGoto;
+    }
+    if (typeof parsed.showTransportPlayRange === "boolean") {
+      uiPreferences.showTransportPlayRange = parsed.showTransportPlayRange;
+    }
+  } catch {
+    // Ignore malformed local storage content and use defaults.
+  }
+}
+
+function saveUiPreferences() {
+  try {
+    localStorage.setItem(UI_PREFERENCES_STORAGE_KEY, JSON.stringify(uiPreferences));
+  } catch {
+    // Ignore local storage write failures.
+  }
+}
+
+function applyUiPreferencesToUI() {
+  const showDynamicRange = uiPreferences.showDynamicRangeInTransportInfo !== false;
+  const showTransportJog = uiPreferences.showTransportJog !== false;
+  const showTransportShuttle = uiPreferences.showTransportShuttle !== false;
+  const showTransportGoto = uiPreferences.showTransportGoto !== false;
+  const showTransportPlayRange = uiPreferences.showTransportPlayRange !== false;
+
+  const dynRangeCell = document.getElementById("dashDynRangeCell");
+  const jogCard = document.getElementById("transportJogCard");
+  const shuttleCard = document.getElementById("transportShuttleCard");
+  const gotoCard = document.getElementById("transportGotoCard");
+  const playRangeCard = document.getElementById("transportPlayRangeCard");
+
+  if (dynRangeCell) {
+    dynRangeCell.hidden = !showDynamicRange;
+  }
+  if (jogCard) {
+    jogCard.hidden = !showTransportJog;
+  }
+  if (shuttleCard) {
+    shuttleCard.hidden = !showTransportShuttle;
+  }
+  if (gotoCard) {
+    gotoCard.hidden = !showTransportGoto;
+  }
+  if (playRangeCard) {
+    playRangeCard.hidden = !showTransportPlayRange;
+  }
+
+  setCheckbox("cfgShowDynRange", showDynamicRange);
+  setCheckbox("cfgShowTransportJog", showTransportJog);
+  setCheckbox("cfgShowTransportShuttle", showTransportShuttle);
+  setCheckbox("cfgShowTransportGoto", showTransportGoto);
+  setCheckbox("cfgShowTransportPlayRange", showTransportPlayRange);
+}
+
+function onCfgShowDynRangeToggleChange() {
+  uiPreferences.showDynamicRangeInTransportInfo = getChecked("cfgShowDynRange");
+  saveUiPreferences();
+  applyUiPreferencesToUI();
+}
+
+function onCfgShowTransportSectionsToggleChange() {
+  uiPreferences.showTransportJog = getChecked("cfgShowTransportJog");
+  uiPreferences.showTransportShuttle = getChecked("cfgShowTransportShuttle");
+  uiPreferences.showTransportGoto = getChecked("cfgShowTransportGoto");
+  uiPreferences.showTransportPlayRange = getChecked("cfgShowTransportPlayRange");
+  saveUiPreferences();
+  applyUiPreferencesToUI();
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -2452,12 +2989,56 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+function initResizableTable(tableId) {
+  const table = document.getElementById(tableId);
+  if (!table) return;
+
+  const headCells = Array.from(table.querySelectorAll("thead th"));
+  if (headCells.length === 0) return;
+
+  headCells.forEach((th) => {
+    if (th.querySelector(".col-resize-handle")) return;
+
+    const handle = document.createElement("span");
+    handle.className = "col-resize-handle";
+    handle.title = "Drag to resize column";
+    th.appendChild(handle);
+
+    handle.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const startX = event.clientX;
+      const startWidth = th.getBoundingClientRect().width;
+      const minWidth = 72;
+
+      const onMouseMove = (moveEvent) => {
+        const delta = moveEvent.clientX - startX;
+        const nextWidth = Math.max(minWidth, startWidth + delta);
+        th.style.width = `${Math.round(nextWidth)}px`;
+      };
+
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+      };
+
+      document.body.style.cursor = "col-resize";
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    });
+  });
+}
+
 // ============================================================
 // SECTION: Initialisation
 // ============================================================
 
 /** Wire up all tabs, attach Enter key to connection form, and auto-open WebSocket. */
 function initUI() {
+  loadUiPreferences();
+
   // Tab navigation
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => activateTab(btn.dataset.tab));
@@ -2476,6 +3057,18 @@ function initUI() {
 
   document.getElementById("playLoop")?.addEventListener("change", onPlayLoopToggleChange);
   document.getElementById("playSingleClip")?.addEventListener("change", onPlaySingleClipToggleChange);
+  document.getElementById("cfgShowDynRange")?.addEventListener("change", onCfgShowDynRangeToggleChange);
+  document.getElementById("cfgShowTransportJog")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("cfgShowTransportShuttle")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("cfgShowTransportGoto")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("cfgShowTransportPlayRange")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("tsPlayRange")?.addEventListener("click", jumpToPlayRangeSection);
+  document.getElementById("playbackPlayRangeSetBadge")?.addEventListener("click", jumpToPlayRangeSection);
+
+  initResizableTable("clipsTable");
+  initResizableTable("currentSlotMediaTable");
+
+  applyUiPreferencesToUI();
 
   document.getElementById("connProfilePort")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") addConnectionProfileFromForm();

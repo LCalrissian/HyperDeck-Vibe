@@ -204,6 +204,14 @@ class DeviceState {
     this.cfg_default_standard = "";
     this.cfg_xlr_mapping = "";
     this.cfg_rca_mapping = "";
+
+    this.playrange_active = null;  // null = unknown, false = none set, true = set
+    this.playrange_clip_id = "";
+    this.playrange_count = "";
+    this.playrange_in = "";
+    this.playrange_out = "";
+    this.playrange_timeline_in = "";
+    this.playrange_timeline_out = "";
   }
 
   toJSON() {
@@ -372,6 +380,10 @@ const device = new HyperDeckTCPClient();
 const state = new DeviceState();
 const broadcaster = new WebSocketBroadcaster();
 
+let pendingPlayrangeQuery = false;
+let pendingPlayrangeClearTimer = null;
+let pendingPlayrangeClearCommand = false;
+
 let responseAccumulator = [];
 let inMultilineResponse = false;
 
@@ -405,6 +417,166 @@ function parseKeyValueBlock(lines) {
     }
   }
   return result;
+}
+
+function normalizeProtocolNone(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  const raw = String(value).trim();
+  if (!raw) {
+    return "";
+  }
+  const lower = raw.toLowerCase();
+  if (lower === "none" || lower === "null" || lower === "n/a") {
+    return "";
+  }
+  return raw;
+}
+
+function normalizeProtocolSlotId(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  const raw = String(value).trim();
+  if (!raw) {
+    return "";
+  }
+  const lower = raw.toLowerCase();
+  if (lower === "null" || lower === "n/a") {
+    return "";
+  }
+  if (lower === "none") {
+    return "none";
+  }
+  return raw;
+}
+
+function parsePlayrangePayload(text, kv) {
+  const normalizePlayrangeValue = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+    const lower = raw.toLowerCase();
+    if (lower === "none" || lower === "null" || lower === "n/a") {
+      return "";
+    }
+    return raw;
+  };
+
+  const parsed = {
+    clip_id: "",
+    count: "",
+    in: "",
+    out: "",
+    timeline_in: "",
+    timeline_out: "",
+  };
+
+  let found = false;
+
+  if (kv["clip id"] !== undefined) {
+    parsed.clip_id = normalizePlayrangeValue(kv["clip id"]);
+    found = found || Boolean(parsed.clip_id);
+  }
+  if (kv["count"] !== undefined) {
+    parsed.count = normalizePlayrangeValue(kv["count"]);
+    found = found || Boolean(parsed.count);
+  }
+  if (kv["in"] !== undefined) {
+    parsed.in = normalizePlayrangeValue(kv["in"]);
+    found = found || Boolean(parsed.in);
+  }
+  if (kv["out"] !== undefined) {
+    parsed.out = normalizePlayrangeValue(kv["out"]);
+    found = found || Boolean(parsed.out);
+  }
+  if (kv["timeline in"] !== undefined) {
+    parsed.timeline_in = normalizePlayrangeValue(kv["timeline in"]);
+    found = found || Boolean(parsed.timeline_in);
+  }
+  if (kv["timeline out"] !== undefined) {
+    parsed.timeline_out = normalizePlayrangeValue(kv["timeline out"]);
+    found = found || Boolean(parsed.timeline_out);
+  }
+
+  const normalizedText = String(text || "").replace(/\s+/g, " ").trim();
+  if (normalizedText) {
+    const clipMatch = normalizedText.match(/clip\s+id:\s*([^\s]+)/i);
+    const countMatch = normalizedText.match(/count:\s*([^\s]+)/i);
+    const inMatch = normalizedText.match(/\bin:\s*(.+?)(?=\s+out:|\s+timeline\s+in:|\s+timeline\s+out:|$)/i);
+    const outMatch = normalizedText.match(/\bout:\s*(.+?)(?=\s+timeline\s+in:|\s+timeline\s+out:|$)/i);
+    const timelineInMatch = normalizedText.match(/timeline\s+in:\s*([^\s]+)/i);
+    const timelineOutMatch = normalizedText.match(/timeline\s+out:\s*([^\s]+)/i);
+
+    if (clipMatch && !parsed.clip_id) parsed.clip_id = normalizePlayrangeValue(clipMatch[1]);
+    if (countMatch && !parsed.count) parsed.count = normalizePlayrangeValue(countMatch[1]);
+    if (inMatch && !parsed.in) parsed.in = normalizePlayrangeValue(inMatch[1]);
+    if (outMatch && !parsed.out) parsed.out = normalizePlayrangeValue(outMatch[1]);
+    if (timelineInMatch && !parsed.timeline_in) parsed.timeline_in = normalizePlayrangeValue(timelineInMatch[1]);
+    if (timelineOutMatch && !parsed.timeline_out) parsed.timeline_out = normalizePlayrangeValue(timelineOutMatch[1]);
+  }
+
+  found = found || Boolean(
+    parsed.clip_id ||
+    parsed.count ||
+    parsed.in ||
+    parsed.out ||
+    parsed.timeline_in ||
+    parsed.timeline_out
+  );
+
+  return found ? parsed : null;
+}
+
+function setPlayrangeStateFromParsed(parsed) {
+  state.playrange_active = true;
+  state.playrange_clip_id = parsed.clip_id;
+  state.playrange_count = parsed.count;
+  state.playrange_in = parsed.in;
+  state.playrange_out = parsed.out;
+  state.playrange_timeline_in = parsed.timeline_in;
+  state.playrange_timeline_out = parsed.timeline_out;
+}
+
+function clearPlayrangeState() {
+  state.playrange_active = false;
+  state.playrange_clip_id = "";
+  state.playrange_count = "";
+  state.playrange_in = "";
+  state.playrange_out = "";
+  state.playrange_timeline_in = "";
+  state.playrange_timeline_out = "";
+}
+
+function cancelPendingPlayrangeClear() {
+  if (pendingPlayrangeClearTimer !== null) {
+    clearTimeout(pendingPlayrangeClearTimer);
+    pendingPlayrangeClearTimer = null;
+  }
+}
+
+function clearPendingPlayrangeFlags() {
+  pendingPlayrangeQuery = false;
+  pendingPlayrangeClearCommand = false;
+  cancelPendingPlayrangeClear();
+}
+
+function schedulePendingPlayrangeClear() {
+  cancelPendingPlayrangeClear();
+  pendingPlayrangeClearTimer = setTimeout(() => {
+    pendingPlayrangeClearTimer = null;
+    if (!pendingPlayrangeQuery) {
+      return;
+    }
+    pendingPlayrangeQuery = false;
+    clearPlayrangeState();
+    broadcaster.broadcast({
+      type: "state",
+      state: state.toJSON(),
+    });
+  }, 250);
 }
 
 function normalizeTransportStatus(rawStatus, speed, fallbackStatus = "") {
@@ -487,10 +659,41 @@ async function handleCompleteResponse(code, text, kv) {
       state.slot_count = maybeSlotCount;
     }
     stateChanged = true;
+  } else if (code === 202 || code === 502 || code === 206 || code === 520) {
+    // Active slot ownership is transport-driven (208/508). For slot/disk responses,
+    // only apply slot metadata when payload slot id matches current active slot.
+    const payloadSlotRaw = kv["slot id"] !== undefined ? kv["slot id"] : kv["active slot"];
+    const payloadSlotId = normalizeProtocolSlotId(payloadSlotRaw);
+    const activeSlotId = normalizeProtocolSlotId(state.transport_slot_id);
+    const isPayloadForActiveSlot =
+      payloadSlotId && payloadSlotId !== "none" && activeSlotId && payloadSlotId === activeSlotId;
+
+    if (isPayloadForActiveSlot && kv["slot name"] !== undefined) {
+      state.transport_slot_name = normalizeProtocolNone(kv["slot name"]);
+      stateChanged = true;
+    }
+    if (isPayloadForActiveSlot && (kv["device name"] !== undefined || kv["device"] !== undefined)) {
+      const nextDevice = kv["device name"] !== undefined ? kv["device name"] : kv["device"];
+      state.transport_device_name = normalizeProtocolNone(nextDevice);
+      stateChanged = true;
+    }
   } else if (code === 208 || code === 508) {
-    state.transport_slot_id = kv["slot id"] || state.transport_slot_id;
-    state.transport_slot_name = kv["slot name"] || state.transport_slot_name;
-    state.transport_device_name = kv["device name"] || kv["device"] || state.transport_device_name;
+    const activeSlotRaw = kv["active slot"] !== undefined ? kv["active slot"] : kv["slot id"];
+    if (activeSlotRaw !== undefined) {
+      const normalizedSlot = normalizeProtocolSlotId(activeSlotRaw);
+      state.transport_slot_id = normalizedSlot;
+      if (!normalizedSlot || normalizedSlot === "none") {
+        state.transport_slot_name = "";
+        state.transport_device_name = "";
+      }
+    }
+    if (kv["slot name"] !== undefined) {
+      state.transport_slot_name = normalizeProtocolNone(kv["slot name"]);
+    }
+    if (kv["device name"] !== undefined || kv["device"] !== undefined) {
+      const nextDevice = kv["device name"] !== undefined ? kv["device name"] : kv["device"];
+      state.transport_device_name = normalizeProtocolNone(nextDevice);
+    }
     state.transport_clip_id = kv["clip id"] || state.transport_clip_id;
     state.transport_display_timecode = kv["display timecode"] || state.transport_display_timecode;
     state.transport_timecode = kv["timecode"] || state.transport_timecode;
@@ -526,6 +729,17 @@ async function handleCompleteResponse(code, text, kv) {
     stateChanged = true;
   } else if (code === 209) {
     await enforceRequiredNotifySettings(kv);
+  } else if (code === 215 || code === 219 || code === 515 || code === 516) {
+    pendingPlayrangeQuery = false;
+    pendingPlayrangeClearCommand = false;
+    cancelPendingPlayrangeClear();
+    const parsedPlayrange = parsePlayrangePayload(text, kv);
+    if (parsedPlayrange) {
+      setPlayrangeStateFromParsed(parsedPlayrange);
+    } else {
+      clearPlayrangeState();
+    }
+    stateChanged = true;
   } else if (code === 211 || code === 511) {
     state.cfg_audio_input = kv["audio input"] || state.cfg_audio_input;
     state.cfg_audio_mapping = kv["audio mapping"] || state.cfg_audio_mapping;
@@ -547,6 +761,18 @@ async function handleCompleteResponse(code, text, kv) {
     state.cfg_default_standard = kv["default standard"] || state.cfg_default_standard;
     state.cfg_xlr_mapping = kv["xlr mapping"] || state.cfg_xlr_mapping;
     state.cfg_rca_mapping = kv["rca mapping"] || state.cfg_rca_mapping;
+    stateChanged = true;
+  }
+
+  if (code === 200 && pendingPlayrangeQuery) {
+    // Some firmware answers "playrange" with 200 first and follow-up data lines.
+    // Defer "no playrange" fallback briefly to avoid transient false negatives.
+    schedulePendingPlayrangeClear();
+  }
+
+  if (code === 200 && pendingPlayrangeClearCommand) {
+    pendingPlayrangeClearCommand = false;
+    clearPlayrangeState();
     stateChanged = true;
   }
 
@@ -603,6 +829,7 @@ async function onHyperDeckLine(line) {
 }
 
 async function onHyperDeckDisconnect() {
+  clearPendingPlayrangeFlags();
   state.reset();
   broadcaster.broadcast({ type: "disconnected" });
   broadcaster.broadcast({ type: "state", state: state.toJSON() });
@@ -617,13 +844,22 @@ async function primeDeviceState() {
     "transport info",
     "remote",
     "configuration",
+    "playrange",
   ];
 
   for (const command of initCommands) {
     try {
+      if (command === "playrange") {
+        pendingPlayrangeQuery = true;
+        pendingPlayrangeClearCommand = false;
+        cancelPendingPlayrangeClear();
+      }
       await device.send(command);
       await new Promise((resolve) => setTimeout(resolve, 50));
     } catch (error) {
+      if (command === "playrange") {
+        clearPendingPlayrangeFlags();
+      }
       console.warn(`Initial command failed (${command}):`, error.message);
     }
   }
@@ -888,9 +1124,21 @@ wss.on("connection", (ws) => {
       }
 
       try {
+        if (command === "playrange") {
+          pendingPlayrangeQuery = true;
+          pendingPlayrangeClearCommand = false;
+          cancelPendingPlayrangeClear();
+        } else if (/^playrange\s+clear\b/i.test(command)) {
+          pendingPlayrangeClearCommand = true;
+          pendingPlayrangeQuery = false;
+          cancelPendingPlayrangeClear();
+        }
         await device.send(command);
         broadcaster.broadcast({ type: "sent", line: command });
       } catch (error) {
+        if (command === "playrange" || /^playrange\s+clear\b/i.test(command)) {
+          clearPendingPlayrangeFlags();
+        }
         broadcaster.sendTo(ws, { type: "error", message: `Send failed: ${error.message}` });
       }
       return;

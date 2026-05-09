@@ -28,7 +28,7 @@
      ═══════════════════════════════════════════════════════════ -->
 <aside class="sidebar">
   <section class="card">
-    <h2 class="card__title" style="text-align:center;margin-bottom:4px">Dashboard</h2>
+    <h2 class="card__title card__title--centered">Dashboard</h2>
     <div class="timecode-display" id="sidebarTimecode" onclick="onSidebarTimecodeClick(event)">--:--:--:--</div>
 
     <div class="sidebar-status-grid">
@@ -36,12 +36,13 @@
       <div class="sidebar-status-item sidebar-status-item--right sidebar-status-item--clickable" onclick="onSidebarRemoteIndicatorClick(event)"><span class="sidebar-dot-label">Remote</span><span class="dot dot--off" id="sidebarDotRemote"></span></div>
       <div class="sidebar-status-item"><span class="info-label">Format</span><span class="status-badge stopped" id="tsFormat">—</span></div>
       <div class="sidebar-status-item sidebar-status-item--right"><span class="sidebar-dot-label">Ref&nbsp;Lock</span><span class="dot dot--off" id="sidebarDotRefLock"></span></div>
+      <div class="sidebar-status-item sidebar-status-item--span-2 sidebar-status-item--center" id="tsPlayRangeRow" hidden><span class="status-badge playrange-set playrange-jump-indicator" id="tsPlayRange" title="Show Play Range section">PLAY RANGE SET</span></div>
     </div>
 
     <div id="sidebarDeviceSection" style="display:none">
       <hr class="divider" />
 
-      <h2 class="card__title">Device</h2>
+      <h2 class="card__title card__title--centered">Device</h2>
       <table class="info-table">
         <tr><td id="devNameLabel">Name</td> <td id="devNameValue">—</td></tr>
         <tr><td>Model</td>    <td id="devModel">—</td></tr>
@@ -60,7 +61,7 @@
   <!-- Tab navigation -->
   <nav class="tabs" id="tabNav">
     <button class="tab active" data-tab="transport">Transport</button>
-    <button class="tab" data-tab="clips">Clips</button>
+    <button class="tab" data-tab="clips">Timeline</button>
     <button class="tab" data-tab="slots">Slots&nbsp;/&nbsp;Disk</button>
     <button class="tab" data-tab="config">Configuration</button>
     <button class="tab" data-tab="slate">Slate</button>
@@ -87,8 +88,8 @@
           <div class="dash-cell__value" id="dashProto">—</div></div>
         <div class="dash-cell"><div class="dash-cell__label">Slot Count</div>
           <div class="dash-cell__value" id="dashSlotCount">—</div></div>
-        <div class="dash-cell" style="grid-column:span 2"><div class="dash-cell__label">Unique ID</div>
-          <div class="dash-cell__value" id="dashUniqueId" style="font-size:.78em">—</div></div>
+        <div class="dash-cell dash-cell--span-2"><div class="dash-cell__label">Unique ID</div>
+          <div class="dash-cell__value dash-cell__value--compact" id="dashUniqueId">—</div></div>
       </div>
     </div>
 
@@ -117,7 +118,7 @@
         <div class="dash-cell"><div class="dash-cell__label">USB Spill</div>
           <div class="dash-cell__value" id="dashCfgUsbSpill">—</div></div>
       </div>
-      <button class="btn btn--xs" onclick="sendCmd('configuration')" style="margin-top:var(--sp-sm)">↻ Refresh Config</button>
+      <button class="btn btn--xs u-mt-sm" onclick="sendCmd('configuration')">↻ Refresh Config</button>
     </div>
 
     <!-- Remote & troubleshooting -->
@@ -127,14 +128,14 @@
         <button class="dash-state-btn state-disabled" id="dashRemoteToggleBtn" onclick="toggleDashboardRemote()">Remote Disabled</button>
         <button class="dash-state-btn state-disabled" id="dashOverrideToggleBtn" onclick="toggleDashboardOverride()">Override Disabled</button>
       </div>
-      <p class="hint" style="margin-top:var(--sp-sm)">
+      <p class="hint u-mt-sm">
         If commands return <strong>111 remote control disabled</strong>, use
         <em>remote: override: true</em> on the Advanced tab, or enable remote
         on the HyperDeck front panel.
       </p>
       <hr class="divider" />
       <p class="hint">Common error codes:</p>
-      <div style="font-size:.78em;color:var(--text-secondary);line-height:2">
+      <div class="codes-list">
         <strong>100</strong> syntax error &nbsp;·&nbsp;
         <strong>101</strong> unsupported parameter &nbsp;·&nbsp;
         <strong>102</strong> invalid value &nbsp;·&nbsp;
@@ -165,14 +166,14 @@
        CONNECTIONS  – saved HyperDeck targets for quick recall
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-connections">
-    <div class="card" style="grid-column:1/-1">
+    <div class="card card--full">
       <h2 class="card__title">New Connection</h2>
       <p class="hint">
         Save a friendly name with Host/IP and Port. Click any entry to populate the Connection card on the left.
         Model is auto-filled after a successful connection.
       </p>
 
-      <div class="conn-entry-row" style="margin-top:var(--sp-sm)">
+      <div class="conn-entry-row u-mt-sm">
         <div class="conn-entry-field conn-entry-field--name">
           <label for="connProfileName">Name</label>
           <input id="connProfileName" type="text" placeholder="Studio A HyperDeck" autocomplete="off" />
@@ -187,12 +188,12 @@
         </div>
       </div>
 
-      <div class="btn-row" style="margin-bottom:var(--sp-sm)">
+      <div class="btn-row u-mb-sm">
         <button class="btn" onclick="uiConnect()">Connect</button>
         <button class="btn btn--primary" onclick="addConnectionProfileFromForm()">Save Connection</button>
       </div>
 
-      <h2 class="card__title" style="margin-top:var(--sp-sm)">Saved Connections</h2>
+      <h2 class="card__title u-mt-sm">Saved Connections</h2>
 
       <div id="savedConnectionsList" class="saved-connections-list"></div>
     </div>
@@ -226,12 +227,13 @@
           <label for="playSingleClip">Single Clip</label>
           <label class="toggle"><input type="checkbox" id="playSingleClip" /><span class="slider"></span></label>
         </div>
+        <span class="status-badge playrange-set playback-playrange-indicator playrange-jump-indicator" id="playbackPlayRangeSetBadge" title="Show Play Range section" hidden>PLAY RANGE SET</span>
       </div>
     </div>
 
     <!-- Transport state -->
     <div class="card">
-      <h2 class="card__title">Transport State</h2>
+      <h2 class="card__title">Transport Info</h2>
       <div class="dash-grid">
         <div class="dash-cell"><div class="dash-cell__label">Clip ID</div>
           <div class="dash-cell__value" id="dashClipId">—</div></div>
@@ -239,13 +241,13 @@
           <div class="dash-cell__value" id="dashSlotId">—</div></div>
         <div class="dash-cell"><div class="dash-cell__label">Timeline Position (frame)</div>
           <div class="dash-cell__value" id="dashTimeline">—</div></div>
-        <div class="dash-cell"><div class="dash-cell__label">Dynamic Range</div>
+        <div class="dash-cell" id="dashDynRangeCell"><div class="dash-cell__label">Dynamic Range</div>
           <div class="dash-cell__value" id="dashDynRange">—</div></div>
       </div>
     </div>
 
     <!-- Jog -->
-    <div class="card">
+    <div class="card" id="transportJogCard">
       <h2 class="card__title">Jog</h2>
       <p class="hint">Frame-accurate positioning. Supports absolute or relative ±timecode.</p>
       <div class="field-grid">
@@ -258,14 +260,14 @@
     </div>
 
     <!-- Shuttle -->
-    <div class="card">
+    <div class="card" id="transportShuttleCard">
       <h2 class="card__title">Shuttle</h2>
       <p class="hint">Continuously variable speed from -5000 to 5000%. 0 = pause.</p>
       <div class="field-row">
         <label for="shuttleSpeed">Speed (%)</label>
         <input id="shuttleSpeed" type="number" value="0" min="-5000" max="5000" step="100" />
       </div>
-      <div class="btn-row" style="margin-bottom:var(--sp-sm)">
+      <div class="btn-row u-mb-sm">
         <button class="btn btn--primary btn--sm" onclick="applyShuttle()">Shuttle</button>
       </div>
       <!-- Speed presets -->
@@ -283,7 +285,7 @@
     </div>
 
     <!-- Go To -->
-    <div class="card">
+    <div class="card" id="transportGotoCard">
       <h2 class="card__title">Go To</h2>
       <p class="hint">Spec: only one parameter/value pair per goto command. Use ± prefix for relative navigation.</p>
       <div class="field-grid">
@@ -313,8 +315,12 @@
     </div>
 
     <!-- Playrange -->
-    <div class="card">
+    <div class="card" id="transportPlayRangeCard">
       <h2 class="card__title">Play Range</h2>
+      <div id="playrangeStatus" class="playrange-status playrange-status--unknown">
+        <span class="playrange-status__pill" id="playrangeStatusPill">—</span>
+        <span class="playrange-status__detail" id="playrangeStatusDetail"></span>
+      </div>
       <p class="hint">Choose exactly one method: Clip ID, Timecode range, or Timeline frames.</p>
       <div class="field-grid">
         <div class="field-row">
@@ -349,18 +355,6 @@
       </div>
     </div>
 
-    <!-- Preview -->
-    <div class="card">
-      <h2 class="card__title">Preview Mode</h2>
-      <p class="hint">Switches between preview (input) and output mode.
-        Stop recording before switching to output.</p>
-      <div class="field-row">
-        <label for="previewEnable">Enable Preview</label>
-        <label class="toggle"><input type="checkbox" id="previewEnable" /><span class="slider"></span></label>
-      </div>
-      <button class="btn btn--primary btn--sm" onclick="applyPreview()">Apply</button>
-    </div>
-
   </div><!-- /tab-transport -->
 
   <!-- ═══════════════════════════════════════════════════════
@@ -369,48 +363,30 @@
   <div class="tab-panel" id="tab-clips">
 
     <!-- Clips Get / browser -->
-    <div class="card" style="grid-column:1/-1">
+    <div class="card card--full">
       <div class="card__title-row">
         <h2 class="card__title">Timeline Clips
           <span class="badge" id="clipCountBadge" style="display:none"></span>
         </h2>
         <div class="btn-row">
-          <button class="btn btn--sm" onclick="sendCmd('clips count')">Count</button>
-          <button class="btn btn--sm" onclick="sendCmd('clips rebuild')">Rebuild</button>
+          <button class="btn btn--sm" onclick="applyClipsRebuild()" title="Adds all clips available on the active media slot to the timeline.">Rebuild</button>
           <button class="btn btn--sm btn--danger" onclick="confirmClipsClear()">Clear All</button>
         </div>
       </div>
-      <div class="field-grid">
-        <div class="field-row">
-          <label for="clipsGetVersion">Response Version</label>
-          <select id="clipsGetVersion" title="Protocol version 1,2,3 – controls field set returned">
-            <option value="">default (1)</option>
-            <option value="2">2 – includes in/out points</option>
-            <option value="3">3 – includes folder paths</option>
-          </select>
-        </div>
-        <div class="field-row">
-          <label for="clipsGetClipId">Start Clip ID</label>
-          <input id="clipsGetClipId" type="number" min="1" placeholder="optional – all if blank" />
-        </div>
-        <div class="field-row">
-          <label for="clipsGetCount">Count</label>
-          <input id="clipsGetCount" type="number" min="1" placeholder="optional" />
-        </div>
-      </div>
-      <button class="btn btn--primary btn--sm" onclick="applyClipsGet()">↻ Load Clips</button>
+      <p class="hint">Click a timeline clip row to cue that clip.</p>
+      <button class="btn btn--primary btn--sm" onclick="applyClipsGet()">↻ Refresh Timeline Info</button>
 
       <div class="clip-table-wrap">
-        <table class="clip-table" id="clipsTable">
+        <table class="clip-table clip-table--resizable" id="clipsTable">
           <thead>
             <tr>
-              <th>ID</th><th>Name</th><th>Start TC</th><th>Duration</th>
-              <th>In TC</th><th>Out TC</th><th>Actions</th>
+              <th style="width:40px">▶</th><th style="width:72px">ID</th><th style="width:320px">Name</th><th>Start TC</th><th>Duration</th>
+              <th>In TC</th><th>Out TC</th><th style="width:40px">✕</th>
             </tr>
           </thead>
           <tbody id="clipsTableBody">
-            <tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:10px">
-              Click "Load Clips" to populate the timeline.</td></tr>
+            <tr><td colspan="8" class="table-cell-empty">
+              Click "Refresh Timeline Info" to populate the timeline.</td></tr>
           </tbody>
         </table>
       </div>
@@ -447,7 +423,7 @@
           <label for="clipAddBeforeId">Before Clip ID</label>
           <input id="clipAddBeforeId" type="number" min="1" placeholder="blank = append" />
         </div>
-        <div class="field-row" style="grid-column:2"><!-- spacer --></div>
+        <div class="field-row field-row--spacer-col2"><!-- spacer --></div>
         <div class="field-row">
           <label for="clipAddInTc">In Timecode</label>
           <input id="clipAddInTc" type="text" placeholder="optional" class="mono" />
@@ -466,16 +442,6 @@
         </div>
       </div>
       <button class="btn btn--primary" onclick="applyClipAdd()">Add Clip</button>
-    </div>
-
-    <!-- Remove Clip -->
-    <div class="card">
-      <h2 class="card__title">Remove Clip from Timeline</h2>
-      <div class="field-row">
-        <label for="clipRemoveId">Clip ID</label>
-        <input id="clipRemoveId" type="number" min="1" placeholder="required" />
-      </div>
-      <button class="btn btn--danger btn--sm" onclick="applyClipRemove()">Remove Clip</button>
     </div>
 
     <!-- Record -->
@@ -513,6 +479,30 @@
                        external drives, format
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-slots">
+
+    <!-- Current slot media -->
+    <div class="card card--full">
+      <div class="card__title-row">
+        <h2 class="card__title">Current Slot Media - <span id="currentSlotMediaSlotId">—</span></h2>
+      </div>
+      <p class="hint">Automatically lists media files available on the currently selected slot when this tab is opened.</p>
+      <p class="hint">Double-click a clip to append it to the timeline.</p>
+      <div class="slot-switcher" id="currentSlotSwitcher" aria-label="Slot selector"></div>
+
+      <div class="clip-table-wrap">
+        <table class="clip-table clip-table--resizable" id="currentSlotMediaTable">
+          <thead>
+            <tr>
+              <th style="width:72px">ID</th><th style="width:320px">Name / Path</th><th>Codec</th><th>Format</th><th>Duration</th>
+            </tr>
+          </thead>
+          <tbody id="currentSlotMediaTableBody">
+            <tr><td colspan="5" class="table-cell-empty">
+              Open the Slots / Disk tab while connected to populate files for the active slot.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
     <!-- Slot Info -->
     <div class="card">
@@ -600,7 +590,7 @@
         <button class="btn btn--sm" onclick="sendCmd('external drive list')">↻ List</button>
         <button class="btn btn--sm" onclick="sendCmd('external drive selected')">Query Selected</button>
       </div>
-      <div class="field-row" style="margin-top:var(--sp-sm)">
+      <div class="field-row u-mt-sm">
         <label for="extDriveDevice">Device name</label>
         <input id="extDriveDevice" type="text" placeholder="device name from list" />
       </div>
@@ -642,7 +632,7 @@
           ✓ Confirm Format
         </button>
       </div>
-      <div class="field-row" style="margin-top:var(--sp-sm)">
+      <div class="field-row u-mt-sm">
         <label for="fmtToken">Token</label>
         <input id="fmtToken" type="text" class="mono"
                placeholder="auto-filled from device response or paste here" />
@@ -656,7 +646,7 @@
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-config">
 
-    <div class="card" style="grid-column:1/-1">
+    <div class="card card--full">
       <div class="card__title-row">
         <h2 class="card__title">Device Configuration
           <!-- Query: configuration  |  Response: 211 configuration: -->
@@ -822,9 +812,43 @@
         </div>
       </div>
 
-      <button class="btn btn--primary" style="margin-top:var(--sp-sm)" onclick="applyConfiguration()">
+      <button class="btn btn--primary u-mt-sm" onclick="applyConfiguration()">
         Apply Configuration
       </button>
+    </div>
+
+    <div class="card card--full">
+      <h2 class="card__title">Dashboard Preferences</h2>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgShowDynRange">Show Dynamic Range in Transport Info</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDynRange" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowTransportJog">Show Jog section</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTransportJog" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowTransportShuttle">Show Shuttle section</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTransportShuttle" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowTransportGoto">Show Go To section</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTransportGoto" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowTransportPlayRange">Show Play Range section</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTransportPlayRange" checked /><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <h3 class="section-heading">Preview Mode</h3>
+      <p class="hint">Switches between preview (input) and output mode. Stop recording before switching to output.</p>
+      <div class="field-row">
+        <label for="previewEnable">Enable Preview</label>
+        <label class="toggle"><input type="checkbox" id="previewEnable" /><span class="slider"></span></label>
+      </div>
+      <button class="btn btn--sm u-mt-sm" onclick="applyPreview()">Apply Preview</button>
     </div>
 
     <!-- Remote Control -->
@@ -900,6 +924,20 @@
         </select>
       </div>
       <button class="btn btn--sm" onclick="applyConnectionProtocol()">Apply</button>
+    </div>
+
+    <!-- Clips -->
+    <div class="card">
+      <h2 class="card__title">Clips</h2>
+      <p class="hint">Controls the response format used by <em>clips get</em> in the Timeline tab.</p>
+      <div class="field-row">
+        <label for="clipsGetVersion">Response Version</label>
+        <select id="clipsGetVersion" title="Protocol version 1,2,3 – controls field set returned">
+          <option value="">default (1)</option>
+          <option value="2">2 – includes in/out points</option>
+          <option value="3">3 – includes folder paths</option>
+        </select>
+      </div>
     </div>
 
     <!-- Authenticate -->
@@ -1110,7 +1148,7 @@
         <button class="btn btn--sm" onclick="sendCmd('nas selected')">↻ Query Selected</button>
         <button class="btn btn--sm btn--danger" onclick="sendCmd('nas deselect')">Deselect / Unmount</button>
       </div>
-      <p class="hint" style="margin-top:var(--sp-sm)">
+      <p class="hint u-mt-sm">
         After mounting with <em>nas select</em>, query <em>slot info: device: network</em>
         or enable slot notifications to confirm the share is mounted.
       </p>
@@ -1240,7 +1278,7 @@
     <div class="card">
       <h2 class="card__title">Raw Command</h2>
       <p class="hint">Send any raw protocol command. Use <code>\n</code> for multiline blocks.</p>
-      <div class="field-row" style="gap:var(--sp-xs)">
+      <div class="field-row u-gap-xs">
         <input id="rawCmd" type="text" class="mono" placeholder="e.g. transport info" />
         <button class="btn btn--primary btn--sm" onclick="sendRawCommand()">Send</button>
       </div>
@@ -1252,25 +1290,25 @@
        CONSOLE  – raw protocol log with colour coding
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-console">
-    <div class="card console-wrap" style="flex:1;min-height:0">
+    <div class="card console-wrap console-card--fill">
       <div class="card__title-row">
         <h2 class="card__title">Protocol Console</h2>
         <div class="btn-row">
-          <label style="font-size:.78em;color:var(--text-secondary);display:flex;align-items:center;gap:4px">
+          <label class="console-option-label">
             <input type="checkbox" id="consoleAutoScroll" checked /> Auto-scroll
           </label>
-          <label style="font-size:.78em;color:var(--text-secondary);display:flex;align-items:center;gap:4px">
+          <label class="console-option-label">
             <input type="checkbox" id="consoleHide208" /> Hide 208
           </label>
           <button class="btn btn--xs" onclick="clearConsole()">Clear</button>
         </div>
       </div>
       <p class="hint">
-        <span style="color:#7ec8e3">■ Sent commands</span>&nbsp;·&nbsp;
-        <span style="color:var(--accent-green)">■ 200 ok</span>&nbsp;·&nbsp;
-        <span style="color:var(--text-primary)">■ 2xx responses</span>&nbsp;·&nbsp;
-        <span style="color:var(--accent-amber)">■ 5xx async</span>&nbsp;·&nbsp;
-        <span style="color:var(--accent-red)">■ 1xx errors</span>
+        <span class="legend--sent">■ Sent commands</span>&nbsp;·&nbsp;
+        <span class="legend--ok">■ 200 ok</span>&nbsp;·&nbsp;
+        <span class="legend--resp">■ 2xx responses</span>&nbsp;·&nbsp;
+        <span class="legend--async">■ 5xx async</span>&nbsp;·&nbsp;
+        <span class="legend--error">■ 1xx errors</span>
       </p>
       <div class="console-output" id="consoleOutput"></div>
       <div class="console-input-row">
