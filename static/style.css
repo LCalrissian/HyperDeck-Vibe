@@ -408,7 +408,7 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 }
 .tbtn--play   { background: #2e3038; }
 .tbtn--stop   { background: #2e3038; }
-.tbtn--record { background: var(--st-record); border-color: var(--st-record); color: #fff; filter: brightness(.82); }
+.tbtn--record { background: var(--st-record); border-color: var(--st-record); color: #fff; filter: brightness(.62); }
 .tbtn--record-no-input {
   background: #2e3038;
   border-color: #2e3038;
@@ -697,6 +697,42 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
   border-color: #2e3038;
   color: var(--text-muted);
   cursor: not-allowed;
+}
+
+.current-slot-info {
+  margin-top: var(--sp-xs);
+  margin-bottom: var(--sp-sm);
+}
+
+.current-slot-info .card__title {
+  margin-bottom: 6px;
+}
+
+.current-slot-info__grid .dash-cell__value {
+  word-break: break-word;
+}
+
+.current-slot-info__blocked {
+  display: inline-block;
+  min-width: 2.4em;
+  text-align: center;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.current-slot-info__blocked--yes {
+  background: #cf4040;
+  border: 1px solid #cf4040;
+  color: #ffffff;
+}
+
+.current-slot-info__blocked--clickable {
+  cursor: pointer;
+}
+
+.current-slot-info__blocked--yes.current-slot-info__blocked--clickable:hover {
+  background: #de4a4a;
+  border-color: #de4a4a;
 }
 
 .clip-table--resizable {

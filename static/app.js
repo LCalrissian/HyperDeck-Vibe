@@ -12,8 +12,10 @@
  * Response code summary (see backend for full table):
  *   200 ok | 201 help | 202 slot info | 204 device info | 205 clips info
  *   206 disk list | 208 transport info | 209 notify | 210 remote info
- *   211 configuration | 212 commands | 213 deck rebooting
- *   225 nas host info | 226 external drive info
+ *   211 configuration | 212 commands | 213 deck rebooting | 214 clips count
+ *   215 uptime | 216 format ready | 218 play on startup | 219 playrange
+ *   220 play option | 221 cache info | 222 dynamic range | 224 nas info
+ *   225 nas host info | 226 external drive info | 227 spill order
  *   Async: 500 connection info | 502 slot | 508 transport | 510 remote
  *          511 configuration | 519 clips | 520 disk list
  *   Errors: 100–112, 120–122, 150–151, 160–163
@@ -68,6 +70,8 @@ let lastObservedClipId = "";
 let lastObservedTransportSlotId = "";
 let lastObservedTimelineSlotId = "";
 let lastTimelineClipsKv = null;
+let timelineClipNameById = new Map();
+let slotMediaClipNameById = new Map();
 
 // Slot media file-size hydration architecture (beginner view):
 // 1) lastSlotMediaKv stores the most recent 206/520 disk list snapshot.
@@ -85,7 +89,9 @@ let slotMediaClipInfoInFlightTimeoutId = null;
 const SLOT_MEDIA_CLIP_INFO_RESPONSE_TIMEOUT_MS = 1_500;
 let lastSlotMediaNamesKey = "";
 let pendingManualClipInfoRequest = false;
+let pendingSpillOrderQuery = false;
 const knownSlotStates = {};
+let currentSlotSwitcherRenderKey = "";
 let lastRecordAttemptAtMs = 0;
 let hasTransportStateHydratedForSession = false;
 let pendingNoInputSourceLookup = false;
@@ -127,6 +133,33 @@ const uiPreferences = {
   showTransportGoto: true,
   showTransportPlayRange: true,
 };
+
+const SLOT_SELECT_COMMON_VIDEO_FORMATS = [
+  "720p50", "720p5994", "720p60",
+  "1080p23976", "1080p24", "1080p25", "1080p2997", "1080p30", "1080p60",
+  "1080i50", "1080i5994", "1080i60",
+];
+
+const SLOT_SELECT_EXTREME_HDR_VIDEO_FORMATS = [
+  "NTSC", "PAL", "NTSCp", "PALp",
+  "2160p23.98", "2160p24", "2160p25", "2160p29.97", "2160p30", "2160p50", "2160p59.94", "2160p60",
+  "4Kp23976", "4Kp24", "4Kp25", "4Kp2997", "4Kp30", "4Kp50", "4Kp5994", "4Kp60",
+];
+
+const SLOT_SELECT_EXTREME_8K_VIDEO_FORMATS = [
+  "4320p23.98", "4320p24", "4320p25", "4320p29.97", "4320p30", "4320p50", "4320p59.94", "4320p60",
+  "8Kp23976", "8Kp24", "8Kp25",
+];
+
+const SLOT_SELECT_STUDIO_PRO_PLUS_4K_FORMATS = [
+  "4Kp23976", "4Kp24", "4Kp25", "4Kp2997", "4Kp30",
+];
+
+const SLOT_SELECT_STUDIO_4K_PRO_EXTRA_FORMATS = [
+  "4Kp50", "4Kp5994", "4Kp60",
+];
+
+let lastSlotSelectModelKey = "";
 
 // ============================================================
 // SECTION: WebSocket management
@@ -397,6 +430,11 @@ function handleParsedResponse(code, text, kv) {
     pumpSlotMediaClipInfoRequests();
   }
 
+  if (pendingSpillOrderQuery && code >= 100 && code <= 199) {
+    pendingSpillOrderQuery = false;
+    displayResultBoxFromPayload("spillOrderResult", kv, text);
+  }
+
   switch (code) {
     // ── 200 ok ─────────────────────────────────────────────────────────
     case 200:
@@ -414,6 +452,7 @@ function handleParsedResponse(code, text, kv) {
       displayResultBox("slotInfoResult", kv);
       updateKnownSlotStateFromResponse(kv);
       renderCurrentSlotSwitcher(deviceState);
+      renderCurrentSlotInfoSummary(deviceState);
       break;
 
     // ── 204  device info ───────────────────────────────────────────────
@@ -510,6 +549,76 @@ function handleParsedResponse(code, text, kv) {
       consoleLog("⚠ Deck rebooting (file format change)", "cl--async");
       break;
 
+    // ── 214  clips count ───────────────────────────────────────────────
+    case 214:
+      updateClipCountBadge(kv["clip count"] || "");
+      break;
+
+    // ── 215  uptime ────────────────────────────────────────────────────
+    case 215:
+      displayResultBoxFromPayload("advUtilResult", kv, text);
+      break;
+
+    // ── 216  format ready (token returned) ─────────────────────────────
+    case 216: {
+      const tokenFromKv = String(kv.token || kv["format token"] || "").trim();
+      // Some firmware returns only the raw token text on its own line.
+      const tokenFromText = String(text || "").split(/\r?\n/)
+        .map((line) => String(line || "").trim())
+        .find((line) => line && line.toLowerCase() !== "format ready") || "";
+      const token = tokenFromKv || tokenFromText;
+
+      if (token) {
+        pendingFormatToken = token;
+        const tokenInput = document.getElementById("fmtToken");
+        if (tokenInput) {
+          tokenInput.value = pendingFormatToken;
+        }
+        const confirmBtn = document.getElementById("btnFormatConfirm");
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+        }
+        showToast(`Format token received: ${pendingFormatToken}`, "warn");
+      }
+      break;
+    }
+
+    // ── 218  play on startup ───────────────────────────────────────────
+    case 218:
+      if (Object.prototype.hasOwnProperty.call(kv, "enabled")) {
+        setCheckbox("posEnable", String(kv.enabled).trim().toLowerCase() === "true");
+      }
+      if (Object.prototype.hasOwnProperty.call(kv, "single clip")) {
+        setCheckbox("posSingleClip", String(kv["single clip"]).trim().toLowerCase() === "true");
+      }
+      break;
+
+    // ── 219  playrange ─────────────────────────────────────────────────
+    case 219:
+      // UI playrange state is synced by backend state snapshots.
+      break;
+
+    // ── 220  play option ───────────────────────────────────────────────
+    case 220:
+      setSelectIfKnown("stopMode", kv["stop mode"]);
+      break;
+
+    // ── 221  cache info ────────────────────────────────────────────────
+    case 221:
+      displayResultBoxFromPayload("advUtilResult", kv, text);
+      break;
+
+    // ── 222  dynamic range ─────────────────────────────────────────────
+    case 222:
+      setSelectIfKnown("drPlaybackOverride", kv["playback override"]);
+      setSelectIfKnown("drRecordOverride", kv["record override"]);
+      break;
+
+    // ── 224  nas list/selected ─────────────────────────────────────────
+    case 224:
+      displayResultBoxFromPayload("advUtilResult", kv, text);
+      break;
+
     // ── 225  nas host info ─────────────────────────────────────────────
     case 225:
       displayResultBox("advUtilResult", kv);
@@ -518,6 +627,12 @@ function handleParsedResponse(code, text, kv) {
     // ── 226  external drive info ───────────────────────────────────────
     case 226:
       displayResultBox("advUtilResult", kv);
+      break;
+
+    // ── 227  spill order ────────────────────────────────────────────────
+    case 227:
+      pendingSpillOrderQuery = false;
+      displayResultBoxFromPayload("spillOrderResult", kv, text);
       break;
 
     // ── 500  connection info (initial banner) ──────────────────────────
@@ -551,6 +666,11 @@ function handleParsedResponse(code, text, kv) {
       }
       break;
     }
+  }
+
+  if (pendingSpillOrderQuery && code >= 200 && code <= 299) {
+    pendingSpillOrderQuery = false;
+    displayResultBoxFromPayload("spillOrderResult", kv, text);
   }
 
   if (code === 110 && Date.now() - lastRecordAttemptAtMs < 4000) {
@@ -649,6 +769,7 @@ const ERROR_CODE_DESCRIPTIONS = {
  */
 function applyStateToUI(state) {
   syncLocalPlaybackFromState(state);
+  refreshSlotSelectVideoFormatOptions(state);
 
   // ── Transport status ──────────────────────────────────────────────────
   const status = state.transport_status || "";
@@ -678,6 +799,7 @@ function applyStateToUI(state) {
   // Dashboard transport
   setText("dashSpeed",      formatSpeed(state.transport_speed));
   setText("dashClipId",     state.transport_clip_id         || "—");
+  updateTransportClipNameIndicator(state);
   setText("dashSlotId",     formatSlot(state));
   const mediaSlotId = normalizeDisplayNone(state.transport_slot_id);
   const mediaSlotLabel = isDisplayNoneToken(mediaSlotId)
@@ -758,6 +880,7 @@ function applyStateToUI(state) {
   maybeRefreshTimelineClipsAfterSlotChange(state);
   maybeRefreshCurrentSlotMediaAfterSlotChange(state);
   renderCurrentSlotSwitcher(state);
+  renderCurrentSlotInfoSummary(state);
   syncTransportAutoRefresh(state);
 
   // ── Play Range status ─────────────────────────────────────────────────
@@ -879,6 +1002,78 @@ function maybeRefreshTimelineClipsAfterSlotChange(state) {
   applyClipsGet();
 }
 
+function formatSlotInfoBlocked(value) {
+  if (value === undefined || value === null) {
+    return "—";
+  }
+
+  const raw = String(value).trim();
+  if (!raw) {
+    return "—";
+  }
+
+  const lower = raw.toLowerCase();
+  if (lower === "true" || lower === "yes" || lower === "1") {
+    return "Yes";
+  }
+  if (lower === "false" || lower === "no" || lower === "0") {
+    return "No";
+  }
+
+  return raw;
+}
+
+function renderCurrentSlotInfoSummary(state = deviceState) {
+  const activeSlot = normalizeDisplayNone(state?.transport_slot_id);
+  const slotKey = (!activeSlot || isDisplayNoneToken(activeSlot)) ? "" : String(activeSlot).trim();
+  const slotInfo = slotKey ? (knownSlotStates[slotKey] || {}) : {};
+
+  const statusText = String(slotInfo.status || "").trim();
+  const normalizedStatus = statusText ? statusText.toUpperCase() : "";
+
+  setText("currentSlotInfoStatus", normalizedStatus || "—");
+  setText("currentSlotInfoName", slotInfo.slotName || "—");
+  setText("currentSlotInfoDevice", slotInfo.device || "—");
+  setText("currentSlotInfoVideoFormat", slotInfo.videoFormat || "—");
+  setText("currentSlotInfoRecordingTime", slotInfo.recordingTime || "—");
+
+  const blockedText = formatSlotInfoBlocked(slotInfo.blocked);
+  setText("currentSlotInfoBlocked", blockedText);
+
+  const blockedEl = document.getElementById("currentSlotInfoBlocked");
+  if (!blockedEl) {
+    return;
+  }
+
+  blockedEl.classList.remove("current-slot-info__blocked--yes", "current-slot-info__blocked--clickable");
+  blockedEl.removeAttribute("role");
+  blockedEl.removeAttribute("tabindex");
+  blockedEl.removeAttribute("title");
+  blockedEl.onclick = null;
+  blockedEl.onkeydown = null;
+
+  if (blockedText !== "Yes" || !slotKey) {
+    return;
+  }
+
+  const triggerUnblock = () => {
+    sendCmd(`slot unblock: slot id: ${slotKey}`);
+    showToast(`Unblocking slot ${slotKey}…`, "ok");
+  };
+
+  blockedEl.classList.add("current-slot-info__blocked--yes", "current-slot-info__blocked--clickable");
+  blockedEl.setAttribute("role", "button");
+  blockedEl.setAttribute("tabindex", "0");
+  blockedEl.title = `Click to unblock slot ${slotKey}`;
+  blockedEl.onclick = triggerUnblock;
+  blockedEl.onkeydown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      triggerUnblock();
+    }
+  };
+}
+
 function updateKnownSlotStateFromResponse(kv) {
   const rawSlotId = normalizeDisplayNone(kv["slot id"]);
   if (!rawSlotId || isDisplayNoneToken(rawSlotId)) {
@@ -887,7 +1082,14 @@ function updateKnownSlotStateFromResponse(kv) {
 
   const slotId = String(rawSlotId).trim();
   if (!knownSlotStates[slotId]) {
-    knownSlotStates[slotId] = { status: "", slotName: "", device: "" };
+    knownSlotStates[slotId] = {
+      status: "",
+      slotName: "",
+      device: "",
+      videoFormat: "",
+      recordingTime: "",
+      blocked: "",
+    };
   }
 
   if (kv["status"] !== undefined) {
@@ -899,6 +1101,15 @@ function updateKnownSlotStateFromResponse(kv) {
   if (kv["device name"] !== undefined || kv["device"] !== undefined) {
     const nextDevice = kv["device name"] !== undefined ? kv["device name"] : kv["device"];
     knownSlotStates[slotId].device = normalizeDisplayNone(nextDevice);
+  }
+  if (kv["video format"] !== undefined) {
+    knownSlotStates[slotId].videoFormat = normalizeDisplayNone(kv["video format"]);
+  }
+  if (kv["recording time"] !== undefined) {
+    knownSlotStates[slotId].recordingTime = normalizeDisplayNone(kv["recording time"]);
+  }
+  if (kv["blocked"] !== undefined) {
+    knownSlotStates[slotId].blocked = String(kv["blocked"] || "").trim();
   }
 }
 
@@ -913,6 +1124,69 @@ function loadAllSlotStates() {
   }
 }
 
+function buildSlotSelectVideoFormatOptions(modelText) {
+  const model = String(modelText || "").trim().toLowerCase();
+  const formats = new Set();
+
+  const isExtreme = model.includes("hyperdeck extreme");
+  const isStudio = model.includes("hyperdeck studio");
+  const isShuttle = model.includes("hyperdeck shuttle");
+  const isExtremeHdr = isExtreme && model.includes("hdr");
+  const isExtreme8k = isExtreme && model.includes("8k");
+  const isStudioProOrPlus = isStudio && (model.includes("pro") || model.includes("plus"));
+  const isStudio4kPro = model.includes("hyperdeck studio 4k pro");
+
+  // Default to common formats when model is unknown so control stays usable.
+  if (!model || isExtreme || isStudio || isShuttle) {
+    SLOT_SELECT_COMMON_VIDEO_FORMATS.forEach((fmt) => formats.add(fmt));
+  }
+
+  if (isExtremeHdr) {
+    SLOT_SELECT_EXTREME_HDR_VIDEO_FORMATS.forEach((fmt) => formats.add(fmt));
+  }
+
+  if (isExtreme8k) {
+    SLOT_SELECT_EXTREME_8K_VIDEO_FORMATS.forEach((fmt) => formats.add(fmt));
+  }
+
+  if (isStudioProOrPlus) {
+    SLOT_SELECT_STUDIO_PRO_PLUS_4K_FORMATS.forEach((fmt) => formats.add(fmt));
+  }
+
+  if (isStudio4kPro) {
+    SLOT_SELECT_STUDIO_4K_PRO_EXTRA_FORMATS.forEach((fmt) => formats.add(fmt));
+  }
+
+  return Array.from(formats);
+}
+
+function refreshSlotSelectVideoFormatOptions(state = deviceState) {
+  const selectEl = document.getElementById("slotSelectVidFmt");
+  if (!selectEl) return;
+
+  const modelKey = String(state?.model || "").trim().toLowerCase();
+  if (modelKey === lastSlotSelectModelKey && selectEl.options.length > 0) {
+    return;
+  }
+
+  const previousValue = String(selectEl.value || "").trim();
+  const options = buildSlotSelectVideoFormatOptions(state?.model || "").sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+  );
+
+  selectEl.innerHTML = `<option value="">— No Video Format Filter —</option>${options
+    .map((fmt) => `<option value="${escapeHtml(fmt)}">${escapeHtml(fmt)}</option>`)
+    .join("")}`;
+
+  if (previousValue && options.some((fmt) => fmt.toLowerCase() === previousValue.toLowerCase())) {
+    setSelectIfKnown("slotSelectVidFmt", previousValue);
+  } else {
+    selectEl.value = "";
+  }
+
+  lastSlotSelectModelKey = modelKey;
+}
+
 function renderCurrentSlotSwitcher(state) {
   const hostEl = document.getElementById("currentSlotSwitcher");
   if (!hostEl) return;
@@ -920,10 +1194,25 @@ function renderCurrentSlotSwitcher(state) {
   const slotCount = Number.parseInt(String(state.slot_count || 0), 10);
   if (!Number.isInteger(slotCount) || slotCount < 1) {
     hostEl.innerHTML = "";
+    currentSlotSwitcherRenderKey = "";
     return;
   }
 
   const activeSlot = normalizeDisplayNone(state.transport_slot_id);
+  const renderKeyParts = [String(activeSlot || "")];
+  for (let i = 1; i <= slotCount; i += 1) {
+    const slotId = String(i);
+    const slotState = knownSlotStates[slotId] || {};
+    const status = String(slotState.status || "").toLowerCase();
+    const slotName = String(slotState.slotName || "");
+    renderKeyParts.push(`${slotId}:${status}:${slotName}`);
+  }
+  const nextRenderKey = `${slotCount}|${renderKeyParts.join("|")}`;
+  if (nextRenderKey === currentSlotSwitcherRenderKey) {
+    renderCurrentSlotInfoSummary(state);
+    return;
+  }
+  currentSlotSwitcherRenderKey = nextRenderKey;
 
   hostEl.innerHTML = Array.from({ length: slotCount }, (_, idx) => {
     const slotId = String(idx + 1);
@@ -954,6 +1243,8 @@ function renderCurrentSlotSwitcher(state) {
       showToast(`Selecting slot ${slotId}…`, "ok");
     });
   }
+
+  renderCurrentSlotInfoSummary(state);
 }
 
 function updateDashboardRemoteToggle(isEnabled) {
@@ -1077,7 +1368,7 @@ function syncTransportActionButtons(state = deviceState) {
 
   const status = String(state.transport_status || "").trim().toUpperCase();
   const speed = Number.parseInt(state.transport_speed ?? 0, 10);
-  if (status === "STOPPED") {
+  if (status === "STOPPED" || status === "PREVIEW") {
     stopBtn?.classList.add("tbtn--active-stop");
     stopBtn?.setAttribute("aria-pressed", "true");
   } else if (status === "PLAY") {
@@ -1912,13 +2203,13 @@ function applyClipInfo() {
  * Trim points are optional; if both timecode and frame numbers are provided,
  * timecode takes precedence (per user expectation).
  */
-function applyClipAdd() {
-  const name      = document.getElementById("clipAddName").value.trim();
-  const beforeId  = document.getElementById("clipAddBeforeId").value.trim();
-  const inTc      = document.getElementById("clipAddInTc").value.trim();
-  const outTc     = document.getElementById("clipAddOutTc").value.trim();
-  const frameIn   = document.getElementById("clipAddFrameIn").value.trim();
-  const frameOut  = document.getElementById("clipAddFrameOut").value.trim();
+function applyClipAddFromIds(ids) {
+  const name = document.getElementById(ids.name)?.value.trim() || "";
+  const beforeId = document.getElementById(ids.beforeId)?.value.trim() || "";
+  const inTc = document.getElementById(ids.inTc)?.value.trim() || "";
+  const outTc = document.getElementById(ids.outTc)?.value.trim() || "";
+  const frameIn = document.getElementById(ids.frameIn)?.value.trim() || "";
+  const frameOut = document.getElementById(ids.frameOut)?.value.trim() || "";
 
   if (!name) { showToast("Clip name is required", "error"); return; }
 
@@ -1928,6 +2219,28 @@ function applyClipAdd() {
   else if (frameIn && frameOut) { opts["frame in"] = frameIn; opts["frame out"] = frameOut; }
 
   sendCmd(buildInlineCommand("clips add", opts));
+}
+
+function applyClipAdd() {
+  applyClipAddFromIds({
+    name: "clipAddName",
+    beforeId: "clipAddBeforeId",
+    inTc: "clipAddInTc",
+    outTc: "clipAddOutTc",
+    frameIn: "clipAddFrameIn",
+    frameOut: "clipAddFrameOut",
+  });
+}
+
+function applyClipAddSlots() {
+  applyClipAddFromIds({
+    name: "slotClipAddName",
+    beforeId: "slotClipAddBeforeId",
+    inTc: "slotClipAddInTc",
+    outTc: "slotClipAddOutTc",
+    frameIn: "slotClipAddFrameIn",
+    frameOut: "slotClipAddFrameOut",
+  });
 }
 
 /** Ask for confirmation then send "clips clear". */
@@ -1952,7 +2265,17 @@ function applyRecord() {
 /** Build and send a "record spill" command with optional slot id. */
 function applyRecordSpill() {
   const slotId = document.getElementById("spillSlotId").value.trim();
-  sendCmd(slotId ? `record: spill: slot id: ${slotId}` : "record spill");
+  sendCmd(slotId ? `record spill: slot id: ${slotId}` : "record spill");
+}
+
+function applySpillOrderQuery() {
+  pendingSpillOrderQuery = true;
+  const el = document.getElementById("spillOrderResult");
+  if (el) {
+    el.hidden = false;
+    el.textContent = "Querying spill order...";
+  }
+  sendCmd("spill order", { quiet: true });
 }
 
 function looksLikeV2ClipEntry(data) {
@@ -1966,9 +2289,67 @@ function looksLikeV2ClipEntry(data) {
     && looksLikeTimecode(fields[3]);
 }
 
+function parseTimelineClipEntry(data, isV2) {
+  const fields = String(data || "").trim().split(/\s+/).filter(Boolean);
+  const looksLikeTimecode = (value) => /^\d{2}:\d{2}:\d{2}[:;]\d{2}$/.test(String(value || "").trim());
+
+  if (isV2) {
+    return {
+      name: fields.slice(4).join(" ") || "—",
+      startTc: fields[0] || "",
+      duration: fields[1] || "—",
+      inTc: fields[2] || "",
+      outTc: fields[3] || "",
+    };
+  }
+
+  // v1: {name} {startTC} {durationTC}. Name may contain spaces, so parse fixed
+  // timecode fields from the right edge of the row.
+  if (
+    fields.length >= 3
+    && looksLikeTimecode(fields[fields.length - 2])
+    && looksLikeTimecode(fields[fields.length - 1])
+  ) {
+    return {
+      name: fields.slice(0, -2).join(" ") || "—",
+      startTc: fields[fields.length - 2],
+      duration: fields[fields.length - 1],
+      inTc: "",
+      outTc: "",
+    };
+  }
+
+  return {
+    name: fields[0] || "—",
+    startTc: fields[1] || "—",
+    duration: fields[2] || "—",
+    inTc: "",
+    outTc: "",
+  };
+}
+
 function parseClipId(value) {
   const parsed = Number.parseInt(String(value || "").trim(), 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function updateTransportClipNameIndicator(state = deviceState) {
+  const clipNameEl = document.getElementById("dashClipName");
+  if (!clipNameEl) return;
+
+  if (!state || state.is_connected !== true) {
+    setText("dashClipName", "—");
+    return;
+  }
+
+  const clipId = parseClipId(state.transport_clip_id);
+  if (clipId === null) {
+    setText("dashClipName", "—");
+    return;
+  }
+
+  const clipName = timelineClipNameById.get(clipId) || slotMediaClipNameById.get(clipId) || "";
+  setText("dashClipName", clipName || "—");
 }
 
 function normalizeTimelineClipInfoValue(value) {
@@ -2207,6 +2588,8 @@ function renderClipsTable(kv) {
   const colSpan = isV2 ? 7 : 8; // includes left Play + right Remove columns
 
   if (clipEntries.length === 0) {
+    timelineClipNameById = new Map();
+    updateTransportClipNameIndicator();
     tbody.innerHTML = `<tr><td colspan="${colSpan}" style="color:var(--text-muted);text-align:center;padding:10px">
       Timeline is empty (107).</td></tr>`;
     return;
@@ -2220,26 +2603,20 @@ function renderClipsTable(kv) {
     .map(([idx]) => parseInt(idx, 10) + clipIdOffset)
     .filter((clipId) => Number.isInteger(clipId));
 
-  tbody.innerHTML = clipEntries.map(([idx, data]) => {
-    const fields = data.trim().split(/\s+/);
+  const nextTimelineClipNameById = new Map();
+  for (const [idx, data] of clipEntries) {
     const clipId = parseInt(idx, 10) + clipIdOffset;
-
-    let name, startTc, duration, inTc, outTc;
-    if (isV2) {
-      // v2/v3: clipStartTC clipDuration inTC outTC filename...
-      startTc  = fields[0] || "";                      // always 00:00:00;00 — hidden
-      duration = fields[1] || "—";
-      inTc     = fields[2] || "";                      // always 00:00:00;00 — hidden
-      outTc    = fields[3] || "";
-      name     = fields.slice(4).join(" ") || "—";    // filename (may include folder path)
-    } else {
-      // v1: name startTC duration
-      name     = fields[0] || "—";
-      startTc  = fields[1] || "—";
-      duration = fields[2] || "—";
-      inTc     = "";
-      outTc    = "";
+    if (!Number.isInteger(clipId)) continue;
+    const { name } = parseTimelineClipEntry(data, isV2);
+    if (name && name !== "—") {
+      nextTimelineClipNameById.set(clipId, name);
     }
+  }
+  timelineClipNameById = nextTimelineClipNameById;
+
+  tbody.innerHTML = clipEntries.map(([idx, data]) => {
+    const clipId = parseInt(idx, 10) + clipIdOffset;
+    const { name, startTc, duration, inTc, outTc } = parseTimelineClipEntry(data, isV2);
 
     const isActive = (clipId === activeClipId);
     const rowClass = isActive ? "clip--active" : "";
@@ -2299,11 +2676,12 @@ function parseDiskListEntry(data) {
   }
 
   // Version 1 style: name, file format, video format, duration
+  // Name may include spaces, so parse fixed fields from the right.
   return {
-    name: fields[0] || "—",
-    fileFormat: fields[1] || "—",
-    format: fields[2] || "—",
-    duration: fields.slice(3).join(" ") || "—",
+    name: fields.slice(0, -3).join(" ") || "—",
+    fileFormat: fields[fields.length - 3] || "—",
+    format: fields[fields.length - 2] || "—",
+    duration: fields[fields.length - 1] || "—",
   };
 }
 
@@ -2326,6 +2704,8 @@ function renderCurrentSlotMediaTable(kv) {
     .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10));
 
   if (mediaEntries.length === 0) {
+    slotMediaClipNameById = new Map();
+    updateTransportClipNameIndicator();
     syncSlotMediaClipInfoCache([]);
     tbody.innerHTML = `<tr><td colspan="6" class="table-cell-empty">
       No media entries returned for current slot.</td></tr>`;
@@ -2334,6 +2714,17 @@ function renderCurrentSlotMediaTable(kv) {
 
   const mediaNames = mediaEntries.map(([, data]) => parseDiskListEntry(data).name).filter((n) => n && n !== "—");
   syncSlotMediaClipInfoCache(mediaNames);
+
+  const nextSlotMediaClipNameById = new Map();
+  for (const [idx, data] of mediaEntries) {
+    const clipId = parseInt(idx, 10);
+    if (!Number.isInteger(clipId)) continue;
+    const parsed = parseDiskListEntry(data);
+    if (parsed.name && parsed.name !== "—") {
+      nextSlotMediaClipNameById.set(clipId, parsed.name);
+    }
+  }
+  slotMediaClipNameById = nextSlotMediaClipNameById;
 
   tbody.innerHTML = mediaEntries.map(([idx, data]) => {
     const parsed = parseDiskListEntry(data);
@@ -2359,6 +2750,7 @@ function renderCurrentSlotMediaTable(kv) {
     row.addEventListener("dblclick", () => appendCurrentSlotMediaClipToTimeline(clipName));
   }
 
+  updateTransportClipNameIndicator();
   requestSlotMediaClipInfo(mediaNames);
 }
 
@@ -2430,21 +2822,21 @@ function applySlotInfo() {
 
 /**
  * Build and send a "slot select" command.
- * Parameters may be combined (slot id + video format, or device + video format).
+ * Always targets the current active slot and optionally applies video format.
  */
 function applySlotSelect() {
-  const slotId    = document.getElementById("slotSelectId").value.trim();
-  const device    = document.getElementById("slotSelectDevice").value.trim();
+  const activeSlotId = normalizeDisplayNone(deviceState.transport_slot_id);
   const vidFormat = document.getElementById("slotSelectVidFmt").value.trim();
 
+  if (!activeSlotId || isDisplayNoneToken(activeSlotId)) {
+    showToast("No active slot is available", "error");
+    return;
+  }
+
   const opts = {};
-  if (slotId)    opts["slot id"]      = slotId;
-  if (device)    opts.device          = device;
+  opts["slot id"] = String(activeSlotId).trim();
   if (vidFormat) opts["video format"] = vidFormat;
 
-  if (!slotId && !device) {
-    showToast("Enter a slot ID or device name", "error"); return;
-  }
   sendCmd(buildInlineCommand("slot select", opts));
 }
 
@@ -3099,6 +3491,24 @@ function displayResultBox(elementId, kv) {
     .join("\n");
 }
 
+function displayResultBoxFromPayload(elementId, kv, rawText = "") {
+  if (kv && Object.keys(kv).length > 0) {
+    displayResultBox(elementId, kv);
+    return;
+  }
+
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const text = String(rawText || "").trim();
+  if (!text) {
+    el.hidden = true;
+    return;
+  }
+
+  el.hidden = false;
+  el.innerHTML = `<span class="rv">${escapeHtml(text).replace(/\n/g, "<br>")}</span>`;
+}
+
 /** Set the textContent of an element by ID. */
 function setText(id, value) {
   const el = document.getElementById(id);
@@ -3380,6 +3790,7 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "addConnectionProfileFromForm",
   "applyAuthenticate",
   "applyClipAdd",
+  "applyClipAddSlots",
   "applyClipInfo",
   "applyClipsGet",
   "applyClipsRebuild",
@@ -3403,6 +3814,7 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "applyPreview",
   "applyRecord",
   "applyRecordSpill",
+  "applySpillOrderQuery",
   "applyRemote",
   "applyShuttle",
   "applyShuttlePreset",

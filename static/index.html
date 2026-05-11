@@ -62,7 +62,7 @@
   <nav class="tabs" id="tabNav">
     <button class="tab active" data-tab="transport">Transport</button>
     <button class="tab" data-tab="clips">Timeline</button>
-    <button class="tab" data-tab="slots">Slots&nbsp;/&nbsp;Disk</button>
+    <button class="tab" data-tab="slots">Media</button>
     <button class="tab" data-tab="config">Configuration</button>
     <button class="tab" data-tab="slate">Slate</button>
     <button class="tab" data-tab="nas">NAS</button>
@@ -237,6 +237,8 @@
       <div class="dash-grid">
         <div class="dash-cell"><div class="dash-cell__label">Clip ID</div>
           <div class="dash-cell__value" id="dashClipId">—</div></div>
+        <div class="dash-cell"><div class="dash-cell__label">CLIP NAME</div>
+          <div class="dash-cell__value" id="dashClipName">—</div></div>
         <div class="dash-cell"><div class="dash-cell__label">Slot ID</div>
           <div class="dash-cell__value" id="dashSlotId">—</div></div>
         <div class="dash-cell"><div class="dash-cell__label">Timeline Position (frame)</div>
@@ -355,6 +357,35 @@
       </div>
     </div>
 
+    <!-- Record -->
+    <div class="card">
+      <h2 class="card__title">Record with Custom Clip Name</h2>
+      <p class="hint">Remote must be enabled. An optional clip name can be set; the deck appends a number automatically.</p>
+      <div class="field-row">
+        <label for="recordName">Clip Name</label>
+        <input id="recordName" type="text" placeholder="optional override" />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--danger btn--primary" data-action="applyRecord()">⏺ Record</button>
+        <button class="btn btn--sm" data-action="sendCmd('stop')">⏹ Stop</button>
+      </div>
+    </div>
+
+    <!-- Record Spill -->
+    <div class="card">
+      <h2 class="card__title">Record Spill</h2>
+      <p class="hint">Continue recording to a different slot when the current slot becomes full.</p>
+      <div class="field-row">
+        <label for="spillSlotId">Slot ID</label>
+        <input id="spillSlotId" type="number" min="1" placeholder="optional" />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--sm" data-action="applyRecordSpill()">Spill to Slot</button>
+        <button class="btn btn--sm" data-action="applySpillOrderQuery()">↻ Query Spill</button>
+      </div>
+      <div id="spillOrderResult" class="result-box" hidden></div>
+    </div>
+
   </div><!-- /tab-transport -->
 
   <!-- ═══════════════════════════════════════════════════════
@@ -392,27 +423,9 @@
       </div>
     </div>
 
-    <!-- Clip Info -->
-    <div class="card">
-      <h2 class="card__title">Clip Info</h2>
-      <p class="hint">Query info for a specific clip by ID or name. Leave both blank for the current clip.</p>
-      <div class="field-grid">
-        <div class="field-row">
-          <label for="clipInfoId">Clip ID</label>
-          <input id="clipInfoId" type="number" min="1" placeholder="blank = current" />
-        </div>
-        <div class="field-row">
-          <label for="clipInfoName">Clip Name</label>
-          <input id="clipInfoName" type="text" placeholder="optional" />
-        </div>
-      </div>
-      <button class="btn btn--sm" data-action="applyClipInfo()">Query Clip Info</button>
-      <div id="clipInfoResult" class="result-box" hidden></div>
-    </div>
-
     <!-- Add Clip -->
     <div class="card">
-      <h2 class="card__title">Add Clip to Timeline</h2>
+      <h2 class="card__title">Manually Add Clip to Timeline</h2>
       <p class="hint">Add a clip from the disk to the current timeline. Specify trim points using timecode or frame numbers (mutually exclusive).</p>
       <div class="field-grid">
         <div class="field-row span-2">
@@ -444,38 +457,10 @@
       <button class="btn btn--primary" data-action="applyClipAdd()">Add Clip</button>
     </div>
 
-    <!-- Record -->
-    <div class="card">
-      <h2 class="card__title">Record</h2>
-      <p class="hint">Remote must be enabled. An optional clip name can be set; the deck appends a number automatically.</p>
-      <div class="field-row">
-        <label for="recordName">Clip Name</label>
-        <input id="recordName" type="text" placeholder="optional override" />
-      </div>
-      <div class="btn-row">
-        <button class="btn btn--danger btn--primary" data-action="applyRecord()">⏺ Record</button>
-        <button class="btn btn--sm" data-action="sendCmd('stop')">⏹ Stop</button>
-      </div>
-    </div>
-
-    <!-- Record Spill -->
-    <div class="card">
-      <h2 class="card__title">Record Spill</h2>
-      <p class="hint">Continue recording to a different slot when the current slot becomes full.</p>
-      <div class="field-row">
-        <label for="spillSlotId">Slot ID</label>
-        <input id="spillSlotId" type="number" min="1" placeholder="optional" />
-      </div>
-      <div class="btn-row">
-        <button class="btn btn--sm" data-action="applyRecordSpill()">Spill to Slot</button>
-        <button class="btn btn--sm" data-action="sendCmd('record spill')">↻ Query Spill</button>
-      </div>
-    </div>
-
   </div><!-- /tab-clips -->
 
   <!-- ═══════════════════════════════════════════════════════
-       SLOTS / DISK  – slot info/select/unblock, disk list,
+      MEDIA  – slot info/select/unblock, disk list,
                        external drives, format
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-slots">
@@ -490,6 +475,24 @@
       <p class="hint">Double-click a clip to append it to the timeline.</p>
       <div class="slot-switcher" id="currentSlotSwitcher" aria-label="Slot selector"></div>
 
+      <div class="current-slot-info" id="currentSlotInfoSection">
+        <h3 class="card__title">Active Slot Info</h3>
+        <div class="dash-grid current-slot-info__grid">
+          <div class="dash-cell"><div class="dash-cell__label">Status</div>
+            <div class="dash-cell__value" id="currentSlotInfoStatus">—</div></div>
+          <div class="dash-cell"><div class="dash-cell__label">Slot Name</div>
+            <div class="dash-cell__value" id="currentSlotInfoName">—</div></div>
+          <div class="dash-cell"><div class="dash-cell__label">Device</div>
+            <div class="dash-cell__value" id="currentSlotInfoDevice">—</div></div>
+          <div class="dash-cell"><div class="dash-cell__label">Video Format</div>
+            <div class="dash-cell__value" id="currentSlotInfoVideoFormat">—</div></div>
+          <div class="dash-cell"><div class="dash-cell__label">Recording Time</div>
+            <div class="dash-cell__value" id="currentSlotInfoRecordingTime">—</div></div>
+          <div class="dash-cell"><div class="dash-cell__label">Blocked</div>
+            <div class="dash-cell__value current-slot-info__blocked" id="currentSlotInfoBlocked">—</div></div>
+        </div>
+      </div>
+
       <div class="clip-table-wrap">
         <table class="clip-table clip-table--resizable" id="currentSlotMediaTable">
           <thead>
@@ -499,86 +502,59 @@
           </thead>
           <tbody id="currentSlotMediaTableBody">
             <tr><td colspan="6" class="table-cell-empty">
-              Open the Slots / Disk tab while connected to populate files for the active slot.</td></tr>
+              Open the Media tab while connected to populate files for the active slot.</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- Slot Info -->
+    <!-- Manual Add Clip -->
     <div class="card">
-      <h2 class="card__title">Slot Info
-        <!-- Response: 202 slot info: slot id, status, volume name, recording time, video format, blocked, sizes -->
-      </h2>
+      <h2 class="card__title">Manually Add Clip to Timeline</h2>
+      <p class="hint">Add a clip from the active disk list to the timeline. Specify trim points using timecode or frame numbers (mutually exclusive).</p>
       <div class="field-grid">
-        <div class="field-row">
-          <label for="slotInfoId">Slot ID</label>
-          <input id="slotInfoId" type="number" min="1" placeholder="blank = active slot" />
+        <div class="field-row span-2">
+          <label for="slotClipAddName">Clip Name / Path</label>
+          <input id="slotClipAddName" type="text" placeholder="folder/HyperDeck_0001.mp4" />
         </div>
         <div class="field-row">
-          <label for="slotInfoDevice">Device name</label>
-          <input id="slotInfoDevice" type="text" placeholder="optional" />
+          <label for="slotClipAddBeforeId">Before Clip ID</label>
+          <input id="slotClipAddBeforeId" type="number" min="1" placeholder="blank = append" />
+        </div>
+        <div class="field-row field-row--spacer-col2"><!-- spacer --></div>
+        <div class="field-row">
+          <label for="slotClipAddInTc">In Timecode</label>
+          <input id="slotClipAddInTc" type="text" placeholder="optional" class="mono" />
+        </div>
+        <div class="field-row">
+          <label for="slotClipAddOutTc">Out Timecode</label>
+          <input id="slotClipAddOutTc" type="text" placeholder="optional" class="mono" />
+        </div>
+        <div class="field-row">
+          <label for="slotClipAddFrameIn">Frame In</label>
+          <input id="slotClipAddFrameIn" type="number" min="0" placeholder="optional" />
+        </div>
+        <div class="field-row">
+          <label for="slotClipAddFrameOut">Frame Out</label>
+          <input id="slotClipAddFrameOut" type="number" min="0" placeholder="optional" />
         </div>
       </div>
-      <button class="btn btn--sm" data-action="applySlotInfo()">Query Slot</button>
-      <div id="slotInfoResult" class="result-box" hidden></div>
+      <button class="btn btn--primary" data-action="applyClipAddSlots()">Add Clip</button>
     </div>
 
     <!-- Slot Select -->
     <div class="card">
-      <h2 class="card__title">Slot Select</h2>
-      <p class="hint">Switch active slot, device, or filter timeline by video format. Parameters may be combined.</p>
+      <h2 class="card__title">Add Clips by Format</h2>
+      <p class="hint">Applies to the current active slot. Optionally filter timeline by video format.</p>
       <div class="field-grid">
-        <div class="field-row">
-          <label for="slotSelectId">Slot ID</label>
-          <input id="slotSelectId" type="number" min="1" placeholder="optional" />
-        </div>
-        <div class="field-row">
-          <label for="slotSelectDevice">Device</label>
-          <input id="slotSelectDevice" type="text" placeholder="optional" />
-        </div>
         <div class="field-row span-2">
           <label for="slotSelectVidFmt">Video Format</label>
-          <input id="slotSelectVidFmt" type="text" placeholder="e.g. 1080p25 (optional – rescans timeline)" />
+          <select id="slotSelectVidFmt">
+            <option value="">— No Video Format Filter —</option>
+          </select>
         </div>
       </div>
       <button class="btn btn--primary btn--sm" data-action="applySlotSelect()">Select</button>
-    </div>
-
-    <!-- Slot Unblock -->
-    <div class="card">
-      <h2 class="card__title">Slot Unblock</h2>
-      <p class="hint">Unblock a blocked slot. <em>blocked</em> appears in slot info when the disk requires unblocking before use.</p>
-      <div class="field-grid">
-        <div class="field-row">
-          <label for="slotUnblockId">Slot ID</label>
-          <input id="slotUnblockId" type="number" min="1" placeholder="blank = active slot" />
-        </div>
-        <div class="field-row">
-          <label for="slotUnblockDevice">Device</label>
-          <input id="slotUnblockDevice" type="text" placeholder="optional" />
-        </div>
-      </div>
-      <button class="btn btn--sm" data-action="applySlotUnblock()">Unblock</button>
-    </div>
-
-    <!-- Disk List -->
-    <div class="card">
-      <h2 class="card__title">Disk List
-        <!-- Response: 206 disk list: index name fileformat videoformat duration -->
-      </h2>
-      <div class="field-grid">
-        <div class="field-row">
-          <label for="diskListSlotId">Slot ID</label>
-          <input id="diskListSlotId" type="number" min="1" placeholder="blank = active slot" />
-        </div>
-        <div class="field-row">
-          <label for="diskListDevice">Device</label>
-          <input id="diskListDevice" type="text" placeholder="optional" />
-        </div>
-      </div>
-      <button class="btn btn--sm" data-action="applyDiskList()">List Disk</button>
-      <div id="diskListResult" class="result-box" hidden></div>
     </div>
 
     <!-- External Drives -->
