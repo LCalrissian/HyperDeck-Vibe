@@ -15,7 +15,7 @@
   <div class="topbar__logo">
     <span class="logo-text">HyperDeck <em>Vibe</em></span>
   </div>
-  <div class="topbar__status" id="topbarStatus" onclick="onTopbarStatusClick(event)">
+  <div class="topbar__status" id="topbarStatus" data-action="onTopbarStatusClick(event)">
     <span class="dot dot--off" id="statusDot"></span>
     <span id="statusText">Disconnected</span>
   </div>
@@ -29,11 +29,11 @@
 <aside class="sidebar">
   <section class="card">
     <h2 class="card__title card__title--centered">Dashboard</h2>
-    <div class="timecode-display" id="sidebarTimecode" onclick="onSidebarTimecodeClick(event)">--:--:--:--</div>
+    <div class="timecode-display" id="sidebarTimecode" data-action="onSidebarTimecodeClick(event)">--:--:--:--</div>
 
     <div class="sidebar-status-grid">
       <div class="sidebar-status-item"><span class="info-label">Status</span><span class="status-badge" id="tsStatus">—</span></div>
-      <div class="sidebar-status-item sidebar-status-item--right sidebar-status-item--clickable" onclick="onSidebarRemoteIndicatorClick(event)"><span class="sidebar-dot-label">Remote</span><span class="dot dot--off" id="sidebarDotRemote"></span></div>
+      <div class="sidebar-status-item sidebar-status-item--right sidebar-status-item--clickable" data-action="onSidebarRemoteIndicatorClick(event)"><span class="sidebar-dot-label">Remote</span><span class="dot dot--off" id="sidebarDotRemote"></span></div>
       <div class="sidebar-status-item"><span class="info-label">Format</span><span class="status-badge stopped" id="tsFormat">—</span></div>
       <div class="sidebar-status-item sidebar-status-item--right"><span class="sidebar-dot-label">Ref&nbsp;Lock</span><span class="dot dot--off" id="sidebarDotRefLock"></span></div>
       <div class="sidebar-status-item sidebar-status-item--span-2 sidebar-status-item--center" id="tsPlayRangeRow" hidden><span class="status-badge playrange-set playrange-jump-indicator" id="tsPlayRange" title="Show Play Range section">PLAY RANGE SET</span></div>
@@ -118,15 +118,15 @@
         <div class="dash-cell"><div class="dash-cell__label">USB Spill</div>
           <div class="dash-cell__value" id="dashCfgUsbSpill">—</div></div>
       </div>
-      <button class="btn btn--xs u-mt-sm" onclick="sendCmd('configuration')">↻ Refresh Config</button>
+      <button class="btn btn--xs u-mt-sm" data-action="sendCmd('configuration')">↻ Refresh Config</button>
     </div>
 
     <!-- Remote & troubleshooting -->
     <div class="card">
       <h2 class="card__title">Remote Control &amp; Troubleshooting</h2>
       <div class="dash-grid">
-        <button class="dash-state-btn state-disabled" id="dashRemoteToggleBtn" onclick="toggleDashboardRemote()">Remote Disabled</button>
-        <button class="dash-state-btn state-disabled" id="dashOverrideToggleBtn" onclick="toggleDashboardOverride()">Override Disabled</button>
+        <button class="dash-state-btn state-disabled" id="dashRemoteToggleBtn" data-action="toggleDashboardRemote()">Remote Disabled</button>
+        <button class="dash-state-btn state-disabled" id="dashOverrideToggleBtn" data-action="toggleDashboardOverride()">Override Disabled</button>
       </div>
       <p class="hint u-mt-sm">
         If commands return <strong>111 remote control disabled</strong>, use
@@ -189,8 +189,8 @@
       </div>
 
       <div class="btn-row u-mb-sm">
-        <button class="btn" onclick="uiConnect()">Connect</button>
-        <button class="btn btn--primary" onclick="addConnectionProfileFromForm()">Save Connection</button>
+        <button class="btn" data-action="uiConnect()">Connect</button>
+        <button class="btn btn--primary" data-action="addConnectionProfileFromForm()">Save Connection</button>
       </div>
 
       <h2 class="card__title u-mt-sm">Saved Connections</h2>
@@ -209,13 +209,13 @@
     <div class="card">
       <h2 class="card__title">Playback</h2>
       <div class="transport-btns">
-        <button class="tbtn" onclick="sendCmd('goto: clip id: -1')" title="Previous clip">⏮</button>
-        <button class="tbtn tbtn--clip-nav" id="transportRewindBtn" onclick="sendCmd('shuttle: speed: -5000')" title="Rewind">◀◀</button>
-        <button class="tbtn tbtn--stop" id="transportStopBtn" onclick="sendCmd('stop')" title="Stop">⏹</button>
-        <button class="tbtn tbtn--play"   id="transportPlayBtn" onclick="applyPlay()"       title="Play">⏵</button>
-        <button class="tbtn tbtn--record" id="transportRecordBtn" onclick="applyRecord()"     title="Record">⏺</button>
-        <button class="tbtn tbtn--clip-nav" id="transportForwardBtn" onclick="sendCmd('shuttle: speed: 5000')"   title="Fast Forward">▶▶</button>
-        <button class="tbtn" onclick="sendCmd('goto: clip id: +1')" title="Next clip">⏭</button>
+        <button class="tbtn" data-action="sendCmd('goto: clip id: -1')" title="Previous clip">⏮</button>
+        <button class="tbtn tbtn--clip-nav" id="transportRewindBtn" data-action="sendCmd('shuttle: speed: -5000')" title="Rewind">◀◀</button>
+        <button class="tbtn tbtn--stop" id="transportStopBtn" data-action="sendCmd('stop')" title="Stop">⏹</button>
+        <button class="tbtn tbtn--play"   id="transportPlayBtn" data-action="applyPlay()"       title="Play">⏵</button>
+        <button class="tbtn tbtn--record" id="transportRecordBtn" data-action="applyRecord()"     title="Record">⏺</button>
+        <button class="tbtn tbtn--clip-nav" id="transportForwardBtn" data-action="sendCmd('shuttle: speed: 5000')"   title="Fast Forward">▶▶</button>
+        <button class="tbtn" data-action="sendCmd('goto: clip id: +1')" title="Next clip">⏭</button>
       </div>
 
       <div class="playback-toggle-inline">
@@ -256,7 +256,7 @@
           <input id="jogTimecode" type="text" placeholder="±00:00:00:00" class="mono" />
         </div>
       </div>
-      <button class="btn btn--primary" onclick="applyJog()">Jog</button>
+      <button class="btn btn--primary" data-action="applyJog()">Jog</button>
     </div>
 
     <!-- Shuttle -->
@@ -268,19 +268,19 @@
         <input id="shuttleSpeed" type="number" value="0" min="-5000" max="5000" step="100" />
       </div>
       <div class="btn-row u-mb-sm">
-        <button class="btn btn--primary btn--sm" onclick="applyShuttle()">Shuttle</button>
+        <button class="btn btn--primary btn--sm" data-action="applyShuttle()">Shuttle</button>
       </div>
       <!-- Speed presets -->
       <div class="shuttle-presets">
-        <button class="btn btn--sm" onclick="applyShuttlePreset(-5000)">◀◀ MAX</button>
-        <button class="btn btn--sm" onclick="applyShuttlePreset(-1600)">◀◀ ×16</button>
-        <button class="btn btn--sm" onclick="applyShuttlePreset(-400)">◀◀ ×4</button>
-        <button class="btn btn--sm" onclick="applyShuttlePreset(-100)">◀ ×1</button>
-        <button class="btn btn--sm" onclick="applyShuttlePreset(0)">■ 0</button>
-        <button class="btn btn--sm" onclick="applyShuttlePreset(100)">▶ ×1</button>
-        <button class="btn btn--sm" onclick="applyShuttlePreset(400)">▶▶ ×4</button>
-        <button class="btn btn--sm" onclick="applyShuttlePreset(1600)">▶▶ ×16</button>
-        <button class="btn btn--sm" onclick="applyShuttlePreset(5000)">▶▶ MAX</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(-5000)">◀◀ MAX</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(-1600)">◀◀ ×16</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(-400)">◀◀ ×4</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(-100)">◀ ×1</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(0)">■ 0</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(100)">▶ ×1</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(400)">▶▶ ×4</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(1600)">▶▶ ×16</button>
+        <button class="btn btn--sm" data-action="applyShuttlePreset(5000)">▶▶ MAX</button>
       </div>
     </div>
 
@@ -291,7 +291,7 @@
       <div class="field-grid">
         <div class="field-row">
           <label for="gotoParam">Navigate by</label>
-          <select id="gotoParam" onchange="updateGotoHint()">
+          <select id="gotoParam" data-change="updateGotoHint()">
             <option value="clip id">Clip ID</option>
             <option value="clip">Clip position</option>
             <option value="timeline">Timeline position</option>
@@ -308,9 +308,9 @@
         Clip ID: absolute ID, +n or -n for relative (clamped to first/last clip).
       </p>
       <div class="btn-row">
-        <button class="btn btn--primary" onclick="applyGoto()">Go To</button>
-        <button class="btn btn--sm" onclick="sendCmd('goto: timeline: start')">Go To Timeline Start</button>
-        <button class="btn btn--sm" onclick="sendCmd('goto: timeline: end')">Go To Timeline End</button>
+        <button class="btn btn--primary" data-action="applyGoto()">Go To</button>
+        <button class="btn btn--sm" data-action="sendCmd('goto: timeline: start')">Go To Timeline Start</button>
+        <button class="btn btn--sm" data-action="sendCmd('goto: timeline: end')">Go To Timeline End</button>
       </div>
     </div>
 
@@ -349,9 +349,9 @@
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn--primary" onclick="applyPlayrangeSet()">Set Range</button>
-        <button class="btn btn--sm" onclick="sendCmd('playrange')">↻ Query</button>
-        <button class="btn btn--sm btn--danger" onclick="sendCmd('playrange clear')">Clear</button>
+        <button class="btn btn--primary" data-action="applyPlayrangeSet()">Set Range</button>
+        <button class="btn btn--sm" data-action="sendCmd('playrange')">↻ Query</button>
+        <button class="btn btn--sm btn--danger" data-action="sendCmd('playrange clear')">Clear</button>
       </div>
     </div>
 
@@ -369,12 +369,12 @@
           <span class="badge" id="clipCountBadge" style="display:none"></span>
         </h2>
         <div class="btn-row">
-          <button class="btn btn--sm" onclick="applyClipsRebuild()" title="Adds all clips available on the active media slot to the timeline.">Rebuild</button>
-          <button class="btn btn--sm btn--danger" onclick="confirmClipsClear()">Clear All</button>
+          <button class="btn btn--sm" data-action="applyClipsRebuild()" title="Adds all clips available on the active media slot to the timeline.">Rebuild</button>
+          <button class="btn btn--sm btn--danger" data-action="confirmClipsClear()">Clear All</button>
         </div>
       </div>
       <p class="hint">Click a timeline clip row to cue that clip.</p>
-      <button class="btn btn--primary btn--sm" onclick="applyClipsGet()">↻ Refresh Timeline Info</button>
+      <button class="btn btn--primary btn--sm" data-action="applyClipsGet()">↻ Refresh Timeline Info</button>
 
       <div class="clip-table-wrap">
         <table class="clip-table clip-table--resizable" id="clipsTable">
@@ -406,7 +406,7 @@
           <input id="clipInfoName" type="text" placeholder="optional" />
         </div>
       </div>
-      <button class="btn btn--sm" onclick="applyClipInfo()">Query Clip Info</button>
+      <button class="btn btn--sm" data-action="applyClipInfo()">Query Clip Info</button>
       <div id="clipInfoResult" class="result-box" hidden></div>
     </div>
 
@@ -441,7 +441,7 @@
           <input id="clipAddFrameOut" type="number" min="0" placeholder="optional" />
         </div>
       </div>
-      <button class="btn btn--primary" onclick="applyClipAdd()">Add Clip</button>
+      <button class="btn btn--primary" data-action="applyClipAdd()">Add Clip</button>
     </div>
 
     <!-- Record -->
@@ -453,8 +453,8 @@
         <input id="recordName" type="text" placeholder="optional override" />
       </div>
       <div class="btn-row">
-        <button class="btn btn--danger btn--primary" onclick="applyRecord()">⏺ Record</button>
-        <button class="btn btn--sm" onclick="sendCmd('stop')">⏹ Stop</button>
+        <button class="btn btn--danger btn--primary" data-action="applyRecord()">⏺ Record</button>
+        <button class="btn btn--sm" data-action="sendCmd('stop')">⏹ Stop</button>
       </div>
     </div>
 
@@ -467,8 +467,8 @@
         <input id="spillSlotId" type="number" min="1" placeholder="optional" />
       </div>
       <div class="btn-row">
-        <button class="btn btn--sm" onclick="applyRecordSpill()">Spill to Slot</button>
-        <button class="btn btn--sm" onclick="sendCmd('record spill')">↻ Query Spill</button>
+        <button class="btn btn--sm" data-action="applyRecordSpill()">Spill to Slot</button>
+        <button class="btn btn--sm" data-action="sendCmd('record spill')">↻ Query Spill</button>
       </div>
     </div>
 
@@ -519,7 +519,7 @@
           <input id="slotInfoDevice" type="text" placeholder="optional" />
         </div>
       </div>
-      <button class="btn btn--sm" onclick="applySlotInfo()">Query Slot</button>
+      <button class="btn btn--sm" data-action="applySlotInfo()">Query Slot</button>
       <div id="slotInfoResult" class="result-box" hidden></div>
     </div>
 
@@ -541,7 +541,7 @@
           <input id="slotSelectVidFmt" type="text" placeholder="e.g. 1080p25 (optional – rescans timeline)" />
         </div>
       </div>
-      <button class="btn btn--primary btn--sm" onclick="applySlotSelect()">Select</button>
+      <button class="btn btn--primary btn--sm" data-action="applySlotSelect()">Select</button>
     </div>
 
     <!-- Slot Unblock -->
@@ -558,7 +558,7 @@
           <input id="slotUnblockDevice" type="text" placeholder="optional" />
         </div>
       </div>
-      <button class="btn btn--sm" onclick="applySlotUnblock()">Unblock</button>
+      <button class="btn btn--sm" data-action="applySlotUnblock()">Unblock</button>
     </div>
 
     <!-- Disk List -->
@@ -576,7 +576,7 @@
           <input id="diskListDevice" type="text" placeholder="optional" />
         </div>
       </div>
-      <button class="btn btn--sm" onclick="applyDiskList()">List Disk</button>
+      <button class="btn btn--sm" data-action="applyDiskList()">List Disk</button>
       <div id="diskListResult" class="result-box" hidden></div>
     </div>
 
@@ -587,14 +587,14 @@
       </h2>
       <p class="hint">Lists USB drives not yet made active. Select a drive to activate it.</p>
       <div class="btn-row">
-        <button class="btn btn--sm" onclick="sendCmd('external drive list')">↻ List</button>
-        <button class="btn btn--sm" onclick="sendCmd('external drive selected')">Query Selected</button>
+        <button class="btn btn--sm" data-action="sendCmd('external drive list')">↻ List</button>
+        <button class="btn btn--sm" data-action="sendCmd('external drive selected')">Query Selected</button>
       </div>
       <div class="field-row u-mt-sm">
         <label for="extDriveDevice">Device name</label>
         <input id="extDriveDevice" type="text" placeholder="device name from list" />
       </div>
-      <button class="btn btn--primary btn--sm" onclick="applyExtDriveSelect()">Select Drive</button>
+      <button class="btn btn--primary btn--sm" data-action="applyExtDriveSelect()">Select Drive</button>
     </div>
 
     <!-- Format Disk -->
@@ -627,8 +627,8 @@
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn--amber btn--sm" onclick="applyFormatPrepare()">Prepare Format…</button>
-        <button class="btn btn--danger btn--sm" id="btnFormatConfirm" onclick="applyFormatConfirm()" disabled>
+        <button class="btn btn--amber btn--sm" data-action="applyFormatPrepare()">Prepare Format…</button>
+        <button class="btn btn--danger btn--sm" id="btnFormatConfirm" data-action="applyFormatConfirm()" disabled>
           ✓ Confirm Format
         </button>
       </div>
@@ -652,7 +652,7 @@
           <!-- Query: configuration  |  Response: 211 configuration: -->
           <!-- Async: 511 configuration: -->
         </h2>
-        <button class="btn btn--sm" onclick="sendCmd('configuration')">↻ Load from Device</button>
+        <button class="btn btn--sm" data-action="sendCmd('configuration')">↻ Load from Device</button>
       </div>
       <p class="hint">Leave fields at "— unchanged —" to omit them from the command.
         Changing the file format may reboot the deck (response 213).</p>
@@ -812,7 +812,7 @@
         </div>
       </div>
 
-      <button class="btn btn--primary u-mt-sm" onclick="applyConfiguration()">
+      <button class="btn btn--primary u-mt-sm" data-action="applyConfiguration()">
         Apply Configuration
       </button>
     </div>
@@ -848,7 +848,7 @@
         <label for="previewEnable">Enable Preview</label>
         <label class="toggle"><input type="checkbox" id="previewEnable" /><span class="slider"></span></label>
       </div>
-      <button class="btn btn--sm u-mt-sm" onclick="applyPreview()">Apply Preview</button>
+      <button class="btn btn--sm u-mt-sm" data-action="applyPreview()">Apply Preview</button>
     </div>
 
     <!-- Remote Control -->
@@ -869,8 +869,8 @@
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applyRemote()">Apply</button>
-        <button class="btn btn--sm" onclick="sendCmd('remote')">↻ Query</button>
+        <button class="btn btn--primary btn--sm" data-action="applyRemote()">Apply</button>
+        <button class="btn btn--sm" data-action="sendCmd('remote')">↻ Query</button>
       </div>
     </div>
 
@@ -889,8 +889,8 @@
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applyPlayOnStartup()">Apply</button>
-        <button class="btn btn--sm" onclick="sendCmd('play on startup')">↻ Query</button>
+        <button class="btn btn--primary btn--sm" data-action="applyPlayOnStartup()">Apply</button>
+        <button class="btn btn--sm" data-action="sendCmd('play on startup')">↻ Query</button>
       </div>
     </div>
 
@@ -907,8 +907,8 @@
         </select>
       </div>
       <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applyPlayOption()">Apply</button>
-        <button class="btn btn--sm" onclick="sendCmd('play option')">↻ Query</button>
+        <button class="btn btn--primary btn--sm" data-action="applyPlayOption()">Apply</button>
+        <button class="btn btn--sm" data-action="sendCmd('play option')">↻ Query</button>
       </div>
     </div>
 
@@ -923,7 +923,7 @@
           <option value="2">2 – id clipStartTC duration inTC outTC path</option>
         </select>
       </div>
-      <button class="btn btn--sm" onclick="applyConnectionProtocol()">Apply</button>
+      <button class="btn btn--sm" data-action="applyConnectionProtocol()">Apply</button>
     </div>
 
     <!-- Clips -->
@@ -954,7 +954,7 @@
           <input id="authPassword" type="password" placeholder="password" />
         </div>
       </div>
-      <button class="btn btn--primary btn--sm" onclick="applyAuthenticate()">Authenticate</button>
+      <button class="btn btn--primary btn--sm" data-action="applyAuthenticate()">Authenticate</button>
     </div>
 
     <!-- Dynamic Range Overrides -->
@@ -989,8 +989,8 @@
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applyDynamicRange()">Apply</button>
-        <button class="btn btn--sm" onclick="sendCmd('dynamic range')">↻ Query</button>
+        <button class="btn btn--primary btn--sm" data-action="applyDynamicRange()">Apply</button>
+        <button class="btn btn--sm" data-action="sendCmd('dynamic range')">↻ Query</button>
       </div>
     </div>
 
@@ -1066,8 +1066,8 @@
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applySlateClips()">Set</button>
-        <button class="btn btn--sm" onclick="sendCmd('slate clips')">↻ Query</button>
+        <button class="btn btn--primary btn--sm" data-action="applySlateClips()">Set</button>
+        <button class="btn btn--sm" data-action="sendCmd('slate clips')">↻ Query</button>
       </div>
     </div>
 
@@ -1095,8 +1095,8 @@
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applySlateProject()">Set</button>
-        <button class="btn btn--sm" onclick="sendCmd('slate project')">↻ Query</button>
+        <button class="btn btn--primary btn--sm" data-action="applySlateProject()">Set</button>
+        <button class="btn btn--sm" data-action="sendCmd('slate project')">↻ Query</button>
       </div>
     </div>
 
@@ -1128,8 +1128,8 @@
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn--primary btn--sm" onclick="applySlateLens()">Set</button>
-        <button class="btn btn--sm" onclick="sendCmd('slate lens')">↻ Query</button>
+        <button class="btn btn--primary btn--sm" data-action="applySlateLens()">Set</button>
+        <button class="btn btn--sm" data-action="sendCmd('slate lens')">↻ Query</button>
       </div>
     </div>
 
@@ -1143,10 +1143,10 @@
     <div class="card">
       <h2 class="card__title">NAS Discovery &amp; Bookmarks</h2>
       <div class="btn-row">
-        <button class="btn btn--sm" onclick="sendCmd('nas discovered')">↻ Discover (mDNS)</button>
-        <button class="btn btn--sm" onclick="sendCmd('nas list')">↻ List Bookmarks</button>
-        <button class="btn btn--sm" onclick="sendCmd('nas selected')">↻ Query Selected</button>
-        <button class="btn btn--sm btn--danger" onclick="sendCmd('nas deselect')">Deselect / Unmount</button>
+        <button class="btn btn--sm" data-action="sendCmd('nas discovered')">↻ Discover (mDNS)</button>
+        <button class="btn btn--sm" data-action="sendCmd('nas list')">↻ List Bookmarks</button>
+        <button class="btn btn--sm" data-action="sendCmd('nas selected')">↻ Query Selected</button>
+        <button class="btn btn--sm btn--danger" data-action="sendCmd('nas deselect')">Deselect / Unmount</button>
       </div>
       <p class="hint u-mt-sm">
         After mounting with <em>nas select</em>, query <em>slot info: device: network</em>
@@ -1174,7 +1174,7 @@
           <input id="nasAddPassword" type="password" placeholder="optional" />
         </div>
       </div>
-      <button class="btn btn--primary btn--sm" onclick="applyNasAdd()">Add NAS Bookmark</button>
+      <button class="btn btn--primary btn--sm" data-action="applyNasAdd()">Add NAS Bookmark</button>
     </div>
 
     <!-- Remove NAS bookmark -->
@@ -1186,7 +1186,7 @@
         <label for="nasRemoveUrl">URL</label>
         <input id="nasRemoveUrl" type="text" placeholder="smb://server.local/share" />
       </div>
-      <button class="btn btn--danger btn--sm" onclick="applyNasRemove()">Remove Bookmark</button>
+      <button class="btn btn--danger btn--sm" data-action="applyNasRemove()">Remove Bookmark</button>
     </div>
 
     <!-- Mount NAS share -->
@@ -1199,14 +1199,14 @@
         <label for="nasSelectUrl">URL</label>
         <input id="nasSelectUrl" type="text" placeholder="smb://server.local/share" />
       </div>
-      <button class="btn btn--primary btn--sm" onclick="applyNasSelect()">Mount Share</button>
+      <button class="btn btn--primary btn--sm" data-action="applyNasSelect()">Mount Share</button>
     </div>
 
     <!-- Slot info for NAS -->
     <div class="card">
       <h2 class="card__title">NAS Slot Status</h2>
       <p class="hint">Query the <em>network</em> device slot to check mount status after <em>nas select</em>.</p>
-      <button class="btn btn--sm" onclick="sendCmd('slot info: device: network')">Query NAS Slot</button>
+      <button class="btn btn--sm" data-action="sendCmd('slot info: device: network')">Query NAS Slot</button>
       <div id="nasSlotResult" class="result-box" hidden></div>
     </div>
 
@@ -1222,12 +1222,12 @@
     <div class="card">
       <h2 class="card__title">Utility Commands</h2>
       <div class="btn-row">
-        <button class="btn btn--sm" onclick="sendCmd('ping')" title="ping → 200 ok">Ping</button>
-        <button class="btn btn--sm" onclick="sendCmd('help')" title="help → 201 help:">Help</button>
-        <button class="btn btn--sm" onclick="sendCmd('?')"   title="? → 201 help:">?</button>
-        <button class="btn btn--sm" onclick="sendCmd('commands')" title="commands → 212 commands: (XML)">Commands (XML)</button>
-        <button class="btn btn--sm" onclick="sendCmd('uptime')"   title="uptime — time since last boot">Uptime</button>
-        <button class="btn btn--sm" onclick="sendCmd('cache info')">Cache Info</button>
+        <button class="btn btn--sm" data-action="sendCmd('ping')" title="ping → 200 ok">Ping</button>
+        <button class="btn btn--sm" data-action="sendCmd('help')" title="help → 201 help:">Help</button>
+        <button class="btn btn--sm" data-action="sendCmd('?')"   title="? → 201 help:">?</button>
+        <button class="btn btn--sm" data-action="sendCmd('commands')" title="commands → 212 commands: (XML)">Commands (XML)</button>
+        <button class="btn btn--sm" data-action="sendCmd('uptime')"   title="uptime — time since last boot">Uptime</button>
+        <button class="btn btn--sm" data-action="sendCmd('cache info')">Cache Info</button>
       </div>
       <div id="advUtilResult" class="result-box" hidden></div>
     </div>
@@ -1240,7 +1240,7 @@
         <label for="identifyEnable">Enable Flash</label>
         <label class="toggle"><input type="checkbox" id="identifyEnable" checked /><span class="slider"></span></label>
       </div>
-      <button class="btn btn--sm" onclick="applyIdentify()">Identify</button>
+      <button class="btn btn--sm" data-action="applyIdentify()">Identify</button>
     </div>
 
     <!-- Watchdog -->
@@ -1255,8 +1255,8 @@
         <input id="watchdogPeriod" type="number" value="0" min="0" />
       </div>
       <div class="btn-row">
-        <button class="btn btn--sm" onclick="applyWatchdog()">Set Watchdog</button>
-        <button class="btn btn--sm" onclick="sendCmd('watchdog')">↻ Query</button>
+        <button class="btn btn--sm" data-action="applyWatchdog()">Set Watchdog</button>
+        <button class="btn btn--sm" data-action="sendCmd('watchdog')">↻ Query</button>
       </div>
     </div>
 
@@ -1264,14 +1264,14 @@
     <div class="card">
       <h2 class="card__title">Reboot Device</h2>
       <div class="warning">⚠ The device will reboot and the connection will be closed.</div>
-      <button class="btn btn--danger btn--sm" onclick="confirmReboot()">Reboot Device</button>
+      <button class="btn btn--danger btn--sm" data-action="confirmReboot()">Reboot Device</button>
     </div>
 
     <!-- Quit -->
     <div class="card">
       <h2 class="card__title">Close Connection</h2>
       <p class="hint">Instruct the HyperDeck to cleanly close the TCP connection.</p>
-      <button class="btn btn--sm" onclick="sendCmd('quit')">Quit</button>
+      <button class="btn btn--sm" data-action="sendCmd('quit')">Quit</button>
     </div>
 
     <!-- Raw command -->
@@ -1280,7 +1280,7 @@
       <p class="hint">Send any raw protocol command. Use <code>\n</code> for multiline blocks.</p>
       <div class="field-row u-gap-xs">
         <input id="rawCmd" type="text" class="mono" placeholder="e.g. transport info" />
-        <button class="btn btn--primary btn--sm" onclick="sendRawCommand()">Send</button>
+        <button class="btn btn--primary btn--sm" data-action="sendRawCommand()">Send</button>
       </div>
     </div>
 
@@ -1300,7 +1300,7 @@
           <label class="console-option-label">
             <input type="checkbox" id="consoleHide208" /> Hide 208
           </label>
-          <button class="btn btn--xs" onclick="clearConsole()">Clear</button>
+          <button class="btn btn--xs" data-action="clearConsole()">Clear</button>
         </div>
       </div>
       <p class="hint">
@@ -1314,7 +1314,7 @@
       <div class="console-input-row">
         <input id="consoleInput" type="text" class="mono"
                placeholder="Type a command and press Enter (use ↑/↓ for history)…" />
-        <button class="btn btn--primary btn--sm" onclick="sendConsoleCommand()">Send</button>
+        <button class="btn btn--primary btn--sm" data-action="sendConsoleCommand()">Send</button>
       </div>
     </div>
   </div><!-- /tab-console -->
@@ -1328,3 +1328,4 @@
 <script src="/static/app.js"></script>
 </body>
 </html>
+

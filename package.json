@@ -4,7 +4,10 @@
   "description": "HyperDeck Vibe Node.js backend",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test --test-concurrency=1",
+    "setup-hooks": "node scripts/setup-hooks.js",
+    "prepare": "npm run setup-hooks"
   },
   "engines": {
     "node": ">=18"

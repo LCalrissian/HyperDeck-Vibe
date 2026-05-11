@@ -12,7 +12,18 @@ const { WebSocketServer } = require("ws");
 const HYPERDECK_DEFAULT_PORT = 9993;
 const APP_DEFAULT_BIND_HOST = "0.0.0.0";
 const APP_DEFAULT_PORT = 8080;
-const CONFIG_JSON_PATH = path.join(__dirname, "connections.json");
+// Why this exists:
+// We allow tests (and future tooling) to point the server at a temporary config
+// file by setting HYPERDECK_CONFIG_PATH. In normal production use, it still
+// defaults to ./connections.json beside this file.
+//
+// Beginner takeaway:
+// Reading configuration from environment variables is a common architecture
+// pattern. It lets the same code run in different environments (local dev,
+// automated tests, CI, containers) without editing source code.
+const CONFIG_JSON_PATH = path.resolve(
+  process.env.HYPERDECK_CONFIG_PATH || path.join(__dirname, "connections.json"),
+);
 
 const AUTO_NOTIFY_OPTIONS = {
   "transport": "true",
@@ -70,13 +81,29 @@ function normalizeBindHost(value) {
   return candidate || APP_DEFAULT_BIND_HOST;
 }
 
+function normalizeStoredConnectionPort(value) {
+  // Why this is different from normalizePort:
+  // normalizePort throws on invalid numbers, which is right for request
+  // validation. But for already-saved config we prefer resilience: if one stored
+  // entry is corrupted, we keep the app usable and fall back to a safe default.
+  //
+  // Beginner takeaway:
+  // Validation strategy depends on context. User input can be rejected loudly;
+  // persisted data often needs graceful recovery to avoid data-loss cascades.
+  try {
+    return normalizePort(value);
+  } catch {
+    return HYPERDECK_DEFAULT_PORT;
+  }
+}
+
 function normalizeConnectionEntry(raw) {
   const entry = raw && typeof raw === "object" ? raw : {};
   return {
     id: String(entry.id || randomUUID()),
     name: String(entry.name || "").trim(),
     host: String(entry.host || "").trim(),
-    port: normalizePort(entry.port),
+    port: normalizeStoredConnectionPort(entry.port),
     model: String(entry.model || "").trim(),
   };
 }
@@ -146,6 +173,58 @@ async function ensureAppConfig() {
   const config = await readAppConfig();
   await writeAppConfig(config);
   return config;
+}
+
+async function readBootstrapConfig() {
+  // Why this function exists:
+  // Startup has different safety requirements than normal read/write flows.
+  // If the config file is missing, we should create one. But if the file exists
+  // and is malformed, we should NOT overwrite it automatically because that could
+  // erase user data that might still be recoverable.
+  //
+  // Beginner takeaway:
+  // "Fail safely" means preserving data whenever possible. Returning
+  // shouldWriteDefaultConfig lets startServer decide whether writing is safe.
+  let raw;
+  try {
+    raw = await fsp.readFile(CONFIG_JSON_PATH, "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return {
+        config: {
+          server: { ...DEFAULT_APP_CONFIG.server },
+          connections: [],
+        },
+        shouldWriteDefaultConfig: true,
+      };
+    }
+
+    console.warn("Failed to read config JSON:", error.message);
+    return {
+      config: {
+        server: { ...DEFAULT_APP_CONFIG.server },
+        connections: [],
+      },
+      shouldWriteDefaultConfig: false,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      config: normalizeConfigShape(parsed),
+      shouldWriteDefaultConfig: false,
+    };
+  } catch (error) {
+    console.warn("Failed to parse config JSON:", error.message);
+    return {
+      config: {
+        server: { ...DEFAULT_APP_CONFIG.server },
+        connections: [],
+      },
+      shouldWriteDefaultConfig: false,
+    };
+  }
 }
 
 class DeviceState {
@@ -379,6 +458,141 @@ class WebSocketBroadcaster {
 const device = new HyperDeckTCPClient();
 const state = new DeviceState();
 const broadcaster = new WebSocketBroadcaster();
+
+class HyperDeckController {
+  constructor({ deviceClient, deviceState, wsBroadcaster }) {
+    // Architectural reason:
+    // This class creates a boundary between transport protocol logic and WebSocket
+    // endpoint plumbing. Today we still use one controller instance, but this
+    // shape makes a future multi-deck design straightforward (one controller per
+    // deck/session) without rewriting every handler again.
+    this.device = deviceClient;
+    this.state = deviceState;
+    this.broadcaster = wsBroadcaster;
+  }
+
+  addBrowserClient(ws) {
+    // New clients get the current snapshot immediately so UI can render without
+    // waiting for the next protocol event.
+    this.broadcaster.addClient(ws);
+    this.broadcaster.sendTo(ws, { type: "state", state: this.state.toJSON() });
+    if (this.state.is_connected) {
+      this.broadcaster.sendTo(ws, {
+        type: "connected",
+        host: this.state.host,
+        port: this.state.port,
+      });
+    }
+  }
+
+  removeBrowserClient(ws) {
+    this.broadcaster.removeClient(ws);
+  }
+
+  async handleBrowserMessage(ws, payload) {
+    // One message router keeps action handling consistent and easier to test.
+    let message;
+    try {
+      message = JSON.parse(String(payload));
+    } catch {
+      this.broadcaster.sendTo(ws, { type: "error", message: "Invalid JSON" });
+      return;
+    }
+
+    const action = String(message.action || "");
+
+    if (action === "connect") {
+      await this.handleConnectAction(ws, message);
+      return;
+    }
+
+    if (action === "disconnect") {
+      await this.handleDisconnectAction();
+      return;
+    }
+
+    if (action === "command") {
+      await this.handleCommandAction(ws, message);
+      return;
+    }
+
+    this.broadcaster.sendTo(ws, { type: "error", message: `Unknown action: ${JSON.stringify(action)}` });
+  }
+
+  async handleConnectAction(ws, message) {
+    // Connect action is isolated so validation, side-effects, and broadcast
+    // sequence are defined in one place.
+    const host = String(message.host || "").trim();
+    const port = normalizePort(message.port ?? HYPERDECK_DEFAULT_PORT);
+
+    if (!host) {
+      this.broadcaster.sendTo(ws, { type: "error", message: "Host / IP address is required" });
+      return;
+    }
+
+    try {
+      await this.device.connect(host, port);
+      this.state.is_connected = true;
+      this.state.host = host;
+      this.state.port = port;
+
+      this.broadcaster.broadcast({ type: "connected", host, port });
+      this.broadcaster.broadcast({ type: "state", state: this.state.toJSON() });
+
+      await primeDeviceState();
+    } catch (error) {
+      this.broadcaster.sendTo(ws, { type: "error", message: `Connection failed: ${error.message}` });
+    }
+  }
+
+  async handleDisconnectAction() {
+    // Disconnect is intentionally symmetric with connect:
+    // close TCP, reset state model, then broadcast disconnected + fresh state.
+    await this.device.disconnect();
+    this.state.reset();
+    this.broadcaster.broadcast({ type: "disconnected" });
+    this.broadcaster.broadcast({ type: "state", state: this.state.toJSON() });
+  }
+
+  async handleCommandAction(ws, message) {
+    // Command sending includes playrange bookkeeping because that feature uses
+    // multi-step asynchronous responses and requires temporary in-memory flags.
+    const command = String(message.command || "").trim();
+
+    if (!command) {
+      return;
+    }
+    if (!this.device.connected) {
+      this.broadcaster.sendTo(ws, { type: "error", message: "Not connected to a HyperDeck" });
+      return;
+    }
+
+    try {
+      if (command === "playrange") {
+        pendingPlayrangeQuery = true;
+        pendingPlayrangeClearCommand = false;
+        cancelPendingPlayrangeClear();
+      } else if (/^playrange\s+clear\b/i.test(command)) {
+        pendingPlayrangeClearCommand = true;
+        pendingPlayrangeQuery = false;
+        cancelPendingPlayrangeClear();
+      }
+      await this.device.send(command);
+      this.broadcaster.broadcast({ type: "sent", line: command });
+    } catch (error) {
+      if (command === "playrange" || /^playrange\s+clear\b/i.test(command)) {
+        clearPendingPlayrangeFlags();
+      }
+      this.broadcaster.sendTo(ws, { type: "error", message: `Send failed: ${error.message}` });
+    }
+  }
+}
+
+const controller = new HyperDeckController({
+  deviceClient: device,
+  deviceState: state,
+  wsBroadcaster: broadcaster,
+});
 
 let pendingPlayrangeQuery = false;
 let pendingPlayrangeClearTimer = null;
@@ -1056,117 +1270,112 @@ device.onLine = onHyperDeckLine;
 device.onDisconnect = onHyperDeckDisconnect;
 
 wss.on("connection", (ws) => {
-  broadcaster.addClient(ws);
-
-  broadcaster.sendTo(ws, { type: "state", state: state.toJSON() });
-  if (state.is_connected) {
-    broadcaster.sendTo(ws, {
-      type: "connected",
-      host: state.host,
-      port: state.port,
-    });
-  }
+  // WebSocket layer now delegates behavior to the controller boundary.
+  // This keeps the transport entry point tiny and easier to reason about.
+  controller.addBrowserClient(ws);
 
   ws.on("message", async (payload) => {
-    let message;
-    try {
-      message = JSON.parse(String(payload));
-    } catch {
-      broadcaster.sendTo(ws, { type: "error", message: "Invalid JSON" });
-      return;
-    }
-
-    const action = String(message.action || "");
-
-    if (action === "connect") {
-      const host = String(message.host || "").trim();
-      const port = normalizePort(message.port ?? HYPERDECK_DEFAULT_PORT);
-
-      if (!host) {
-        broadcaster.sendTo(ws, { type: "error", message: "Host / IP address is required" });
-        return;
-      }
-
-      try {
-        await device.connect(host, port);
-        state.is_connected = true;
-        state.host = host;
-        state.port = port;
-
-        broadcaster.broadcast({ type: "connected", host, port });
-        broadcaster.broadcast({ type: "state", state: state.toJSON() });
-
-        await primeDeviceState();
-      } catch (error) {
-        broadcaster.sendTo(ws, { type: "error", message: `Connection failed: ${error.message}` });
-      }
-      return;
-    }
-
-    if (action === "disconnect") {
-      await device.disconnect();
-      state.reset();
-      broadcaster.broadcast({ type: "disconnected" });
-      broadcaster.broadcast({ type: "state", state: state.toJSON() });
-      return;
-    }
-
-    if (action === "command") {
-      const command = String(message.command || "").trim();
-      const quiet = Boolean(message.quiet);
-
-      if (!command) {
-        return;
-      }
-      if (!device.connected) {
-        broadcaster.sendTo(ws, { type: "error", message: "Not connected to a HyperDeck" });
-        return;
-      }
-
-      try {
-        if (command === "playrange") {
-          pendingPlayrangeQuery = true;
-          pendingPlayrangeClearCommand = false;
-          cancelPendingPlayrangeClear();
-        } else if (/^playrange\s+clear\b/i.test(command)) {
-          pendingPlayrangeClearCommand = true;
-          pendingPlayrangeQuery = false;
-          cancelPendingPlayrangeClear();
-        }
-        await device.send(command);
-        broadcaster.broadcast({ type: "sent", line: command });
-      } catch (error) {
-        if (command === "playrange" || /^playrange\s+clear\b/i.test(command)) {
-          clearPendingPlayrangeFlags();
-        }
-        broadcaster.sendTo(ws, { type: "error", message: `Send failed: ${error.message}` });
-      }
-      return;
-    }
-
-    broadcaster.sendTo(ws, { type: "error", message: `Unknown action: ${JSON.stringify(action)}` });
+    await controller.handleBrowserMessage(ws, payload);
   });
 
   ws.on("close", () => {
-    broadcaster.removeClient(ws);
+    controller.removeBrowserClient(ws);
   });
 
   ws.on("error", () => {
-    broadcaster.removeClient(ws);
+    controller.removeBrowserClient(ws);
   });
 });
 
-async function bootstrap() {
-  const config = await ensureAppConfig();
+async function startServer() {
+  // Startup policy:
+  // - Missing config file: create defaults
+  // - Existing but malformed/unreadable config: run with in-memory defaults,
+  //   but do not overwrite the on-disk file automatically.
+  const { config, shouldWriteDefaultConfig } = await readBootstrapConfig();
+  if (shouldWriteDefaultConfig) {
+    await writeAppConfig(config);
+  }
+
   const bindHost = normalizeBindHost(config.server.bind_host);
   const bindPort = normalizeServerPort(config.server.port);
 
-  server.listen(bindPort, bindHost, () => {
-    console.info(`HyperDeck Vibe Node server listening on http://${bindHost}:${bindPort}`);
+  await new Promise((resolve, reject) => {
+    // Wrapping server.listen in a Promise gives us await-able startup, which is
+    // critical for integration tests and future orchestration code.
+    const onError = (error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(bindPort, bindHost);
+  });
+
+  const address = server.address();
+  if (address && typeof address === "object") {
+    console.info(`HyperDeck Vibe Node server listening on http://${address.address}:${address.port}`);
+  }
+
+  return { bindHost, bindPort };
+}
+
+async function stopServer() {
+  // Graceful shutdown helper for tests and future lifecycle controls.
+  // Without this, tests can leak open servers and make ports appear "in use".
+  if (!server.listening) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
   });
 }
 
-bootstrap().catch((error) => {
-  console.error("Failed to initialize server configuration:", error);
-  process.exit(1);
-});
+module.exports = {
+  HYPERDECK_DEFAULT_PORT,
+  APP_DEFAULT_BIND_HOST,
+  APP_DEFAULT_PORT,
+  CONFIG_JSON_PATH,
+  HyperDeckController,
+  controller,
+  normalizePort,
+  normalizeServerPort,
+  normalizeBindHost,
+  normalizeStoredConnectionPort,
+  normalizeConnectionEntry,
+  normalizeConfigShape,
+  readAppConfig,
+  writeAppConfig,
+  readBootstrapConfig,
+  app,
+  server,
+  startServer,
+  stopServer,
+};
+
+if (require.main === module) {
+  // This guard means:
+  // - "node server.js" starts the app
+  // - "require('./server')" from tests does NOT auto-start network listeners
+  //
+  // Beginner takeaway:
+  // Libraries should avoid side effects on import. It makes code reusable and
+  // test-friendly.
+  startServer().catch((error) => {
+    console.error("Failed to initialize server configuration:", error);
+    process.exit(1);
+  });
+}

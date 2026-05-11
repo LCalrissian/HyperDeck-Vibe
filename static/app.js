@@ -33,6 +33,14 @@ let deviceState = {};
 
 /** Current WebSocket instance (null when disconnected). */
 let socket = null;
+// Why this queue exists:
+// If a user clicks Connect while the WebSocket is still opening, we do not want
+// to drop their action. We temporarily queue messages and flush them once OPEN.
+//
+// Beginner takeaway:
+// Event-driven systems are asynchronous. A "not ready yet" state is normal and
+// should be handled intentionally, not treated as an error by default.
+const pendingBackendMessages = [];
 
 /** Command history for the console's ↑/↓ navigation. */
 const commandHistory = [];
@@ -119,6 +127,7 @@ function openWebSocket() {
 
   socket.addEventListener("open", () => {
     consoleLog("— WebSocket connected to server —", "cl--connect");
+    flushPendingBackendMessages();
   });
 
   socket.addEventListener("message", (event) => {
@@ -145,14 +154,63 @@ function openWebSocket() {
   });
 }
 
-/**
- * Send a JSON message to the backend over the WebSocket.
- * Silently drops the message if the socket is not OPEN.
- */
-function sendToBackend(payload) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
+function isSocketOpen() {
+  // Single source of truth for socket readiness checks.
+  // This removes repeated conditions and avoids subtle inconsistencies.
+  return Boolean(socket && socket.readyState === WebSocket.OPEN);
+}
+
+function queueBackendMessage(payload, options = {}) {
+  // dedupeAction keeps only the latest intent for the same action type
+  // (for example, multiple rapid connect clicks). This prevents stale queued
+  // actions from running after the socket opens.
+  const shouldDedupeAction = options.dedupeAction === true;
+  const action = shouldDedupeAction ? String(payload?.action || "") : "";
+  if (action) {
+    for (let i = pendingBackendMessages.length - 1; i >= 0; i -= 1) {
+      if (String(pendingBackendMessages[i]?.action || "") === action) {
+        pendingBackendMessages.splice(i, 1);
+      }
+    }
+  }
+  pendingBackendMessages.push(payload);
+}
+
+function flushPendingBackendMessages() {
+  // Drain queue in FIFO order so user actions occur in the same order they were
+  // triggered.
+  if (!isSocketOpen()) {
+    return;
+  }
+
+  while (pendingBackendMessages.length > 0) {
+    const payload = pendingBackendMessages.shift();
     socket.send(JSON.stringify(payload));
   }
+}
+
+/**
+ * Send a JSON message to the backend over the WebSocket.
+ * Optionally queues the message while the socket is CONNECTING.
+ */
+function sendToBackend(payload, options = {}) {
+  // Returns true if sent immediately, false otherwise.
+  // Returning a status makes this function explicit and easier to reason about.
+  if (isSocketOpen()) {
+    socket.send(JSON.stringify(payload));
+    return true;
+  }
+
+  if (
+    options.queueIfConnecting === true &&
+    socket &&
+    socket.readyState === WebSocket.CONNECTING
+  ) {
+    queueBackendMessage(payload, { dedupeAction: options.dedupeAction === true });
+    return false;
+  }
+
+  return false;
 }
 
 // ============================================================
@@ -561,15 +619,7 @@ function applyStateToUI(state) {
     tsPlayRangeEl.className = "status-badge playrange-set";
   }
   if (state.is_connected !== true) {
-    setText("tsStatus", "—");
-    const tsStatusEl = document.getElementById("tsStatus");
-    if (tsStatusEl) tsStatusEl.className = "status-badge stopped";
-    const tsFormatEl = document.getElementById("tsFormat");
-    setText("tsFormat", "—");
-    if (tsFormatEl) tsFormatEl.className = "status-badge stopped";
-    if (tsPlayRangeRowEl) {
-      tsPlayRangeRowEl.hidden = true;
-    }
+    resetDisconnectedTransportUI(tsPlayRangeRowEl);
   }
   syncTransportActionButtons(state);
 
@@ -840,7 +890,7 @@ function renderCurrentSlotSwitcher(state) {
       data-slot-id="${slotId}"
       ${isEmpty ? "disabled" : ""}
       title="${isEmpty ? "Slot empty" : "Make active slot"}">
-      ${escHtml(label)}
+      ${escapeHtml(label)}
     </button>`;
   }).join("");
 
@@ -1078,14 +1128,14 @@ function uiConnect() {
   const port = parseInt(String(document.getElementById("connProfilePort")?.value || "9993"), 10) || 9993;
   if (!host) { showToast("Enter a host IP address", "error"); return; }
 
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!socket || socket.readyState === WebSocket.CLOSED) {
     openWebSocket();
   }
 
-  // Small delay to let the WebSocket open before sending the connect action
-  setTimeout(() => {
-    sendToBackend({ action: "connect", host, port });
-  }, 150);
+  sendToBackend(
+    { action: "connect", host, port },
+    { queueIfConnecting: true, dedupeAction: true },
+  );
 }
 
 /** Called on the Disconnect button click. */
@@ -1230,13 +1280,7 @@ function updateConnectionUI(isConnected, host = "", port = "") {
     // Reset live displays
     setText("sidebarTimecode", "DISCONNECTED");
     sidebarTimecode?.classList.add("timecode-display--disconnected");
-    setText("tsStatus", "—");
-    const tsStatusEl = document.getElementById("tsStatus");
-    if (tsStatusEl) tsStatusEl.className = "status-badge stopped";
-    const tsFormatEl = document.getElementById("tsFormat");
-    setText("tsFormat", "—");
-    if (tsFormatEl) tsFormatEl.className = "status-badge stopped";
-    syncTransportActionButtons({ is_connected: false });
+    resetDisconnectedTransportUI();
   }
 
   // Re-render the saved connections list only when the connection marker changes.
@@ -1515,7 +1559,7 @@ async function maybeSyncConnectedModel(state) {
  * This is the single entry point for all command dispatch.
  */
 function sendCmd(command, options = {}) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!isSocketOpen()) {
     showToast("Not connected to the server", "error");
     return;
   }
@@ -1938,16 +1982,16 @@ function renderClipsTable(kv) {
 
     return `<tr class="${rowClass}">
       <td class="clip-actions">
-        <button class="btn btn--xs btn--play-icon" onclick="playTimelineClip(${clipId})" title="Play this clip"> </button>
+        <button class="btn btn--xs btn--play-icon" data-action="playTimelineClip(${clipId})" title="Play this clip"> </button>
       </td>
       <td>${clipId}</td>
-      <td class="clip-name" title="${escHtml(name)}">${escHtml(name)}</td>
-      <td>${escHtml(startTc)}</td>
-      <td>${escHtml(duration)}</td>
-      <td>${escHtml(inTc)}</td>
-      <td>${escHtml(outTc)}</td>
+      <td class="clip-name" title="${escapeHtml(name)}">${escapeHtml(name)}</td>
+      <td>${escapeHtml(startTc)}</td>
+      <td>${escapeHtml(duration)}</td>
+      <td>${escapeHtml(inTc)}</td>
+      <td>${escapeHtml(outTc)}</td>
       <td class="clip-actions">
-        <button class="btn btn--xs btn--danger" onclick="removeClip(${clipId})" title="Remove from timeline">✕</button>
+        <button class="btn btn--xs btn--danger" data-action="removeClip(${clipId})" title="Remove from timeline">✕</button>
       </td>
     </tr>`;
   }).join("");
@@ -2016,11 +2060,11 @@ function renderCurrentSlotMediaTable(kv) {
   tbody.innerHTML = mediaEntries.map(([idx, data]) => {
     const parsed = parseDiskListEntry(data);
     return `<tr>
-      <td>${escHtml(idx)}</td>
-      <td class="clip-name" title="${escHtml(parsed.name)}">${escHtml(parsed.name)}</td>
-      <td>${escHtml(parsed.codec)}</td>
-      <td>${escHtml(parsed.format)}</td>
-      <td>${escHtml(parsed.duration)}</td>
+      <td>${escapeHtml(idx)}</td>
+      <td class="clip-name" title="${escapeHtml(parsed.name)}">${escapeHtml(parsed.name)}</td>
+      <td>${escapeHtml(parsed.codec)}</td>
+      <td>${escapeHtml(parsed.format)}</td>
+      <td>${escapeHtml(parsed.duration)}</td>
     </tr>`;
   }).join("");
 
@@ -2511,7 +2555,7 @@ document.addEventListener("keydown", (e) => {
 function startWatchdog() {
   stopWatchdog();
   watchdogIntervalId = setInterval(() => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    if (isSocketOpen()) {
       sendCmd("ping");
     }
   }, WATCHDOG_INTERVAL_MS);
@@ -2592,7 +2636,7 @@ function stopTransportAutoRefresh() {
 }
 
 function queueStoppedNotifyTransportRefresh() {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!isSocketOpen()) {
     return;
   }
 
@@ -2607,7 +2651,7 @@ function queueStoppedNotifyTransportRefresh() {
 }
 
 function requestTransportRefresh() {
-  if (!socket || socket.readyState !== WebSocket.OPEN || transportRefreshInFlight) {
+  if (!isSocketOpen() || transportRefreshInFlight) {
     return;
   }
 
@@ -2765,23 +2809,35 @@ function displayResultBox(elementId, kv) {
   if (!kv || Object.keys(kv).length === 0) { el.hidden = true; return; }
   el.hidden = false;
   el.innerHTML = Object.entries(kv)
-    .map(([k, v]) => `<span class="rk">${escHtml(k)}:</span> <span class="rv">${escHtml(v)}</span>`)
+    .map(([k, v]) => `<span class="rk">${escapeHtml(k)}:</span> <span class="rv">${escapeHtml(v)}</span>`)
     .join("\n");
-}
-
-/** Escape HTML special characters to prevent XSS in dynamically generated markup. */
-function escHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 /** Set the textContent of an element by ID. */
 function setText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value;
+}
+
+function resetDisconnectedTransportUI(tsPlayRangeRowEl = null) {
+  // Why centralized reset matters:
+  // The disconnected visual state is used in multiple flows. Keeping this logic
+  // in one helper prevents drift where one path updates more elements than
+  // another.
+  setText("tsStatus", "—");
+  const tsStatusEl = document.getElementById("tsStatus");
+  if (tsStatusEl) tsStatusEl.className = "status-badge stopped";
+
+  setText("tsFormat", "—");
+  const tsFormatEl = document.getElementById("tsFormat");
+  if (tsFormatEl) tsFormatEl.className = "status-badge stopped";
+
+  const rowEl = tsPlayRangeRowEl || document.getElementById("tsPlayRangeRow");
+  if (rowEl) {
+    rowEl.hidden = true;
+  }
+
+  syncTransportActionButtons({ is_connected: false });
 }
 
 /** Get the .value of a form element. */
@@ -3031,6 +3087,203 @@ function initResizableTable(tableId) {
   });
 }
 
+const DECLARATIVE_ACTION_FUNCTIONS = new Set([
+  // Security and predictability note:
+  // We intentionally allow only known functions from HTML data-action strings.
+  // This avoids using eval and prevents arbitrary code execution from markup.
+  "addConnectionProfileFromForm",
+  "applyAuthenticate",
+  "applyClipAdd",
+  "applyClipInfo",
+  "applyClipsGet",
+  "applyClipsRebuild",
+  "applyConfiguration",
+  "applyConnectionProtocol",
+  "applyDiskList",
+  "applyDynamicRange",
+  "applyExtDriveSelect",
+  "applyFormatConfirm",
+  "applyFormatPrepare",
+  "applyGoto",
+  "applyIdentify",
+  "applyJog",
+  "applyNasAdd",
+  "applyNasRemove",
+  "applyNasSelect",
+  "applyPlay",
+  "applyPlayOnStartup",
+  "applyPlayOption",
+  "applyPlayrangeSet",
+  "applyPreview",
+  "applyRecord",
+  "applyRecordSpill",
+  "applyRemote",
+  "applyShuttle",
+  "applyShuttlePreset",
+  "applySlateClips",
+  "applySlateLens",
+  "applySlateProject",
+  "applySlotInfo",
+  "applySlotSelect",
+  "applySlotUnblock",
+  "applyWatchdog",
+  "clearConsole",
+  "confirmClipsClear",
+  "confirmReboot",
+  "onSidebarRemoteIndicatorClick",
+  "onSidebarTimecodeClick",
+  "onTopbarStatusClick",
+  "playTimelineClip",
+  "removeClip",
+  "sendCmd",
+  "sendConsoleCommand",
+  "sendRawCommand",
+  "toggleDashboardOverride",
+  "toggleDashboardRemote",
+  "uiConnect",
+  "updateGotoHint",
+]);
+
+function splitActionArguments(argsText) {
+  // Tiny parser for comma-separated function arguments while respecting quoted
+  // strings. This lets us support expressions like:
+  //   sendCmd('goto: clip id: +1')
+  // without needing a full JavaScript parser.
+  const args = [];
+  let current = "";
+  let quote = "";
+
+  for (let i = 0; i < argsText.length; i += 1) {
+    const ch = argsText[i];
+
+    if (quote) {
+      current += ch;
+      if (ch === quote && argsText[i - 1] !== "\\") {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+
+    if (ch === ",") {
+      args.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (current.trim() !== "") {
+    args.push(current.trim());
+  }
+
+  return args;
+}
+
+function parseActionArgument(token, event) {
+  // Convert textual tokens from HTML attributes into runtime values.
+  // Example: "true" -> true, "42" -> 42, "event" -> click event object.
+  if (token === "event") {
+    return event;
+  }
+
+  if (token === "true") {
+    return true;
+  }
+  if (token === "false") {
+    return false;
+  }
+
+  if (/^-?\d+(\.\d+)?$/.test(token)) {
+    return Number(token);
+  }
+
+  if (
+    (token.startsWith("\"") && token.endsWith("\"")) ||
+    (token.startsWith("'") && token.endsWith("'"))
+  ) {
+    const unquoted = token.slice(1, -1);
+    return unquoted
+      .replace(/\\'/g, "'")
+      .replace(/\\\"/g, '"')
+      .replace(/\\\\/g, "\\");
+  }
+
+  return token;
+}
+
+function runDeclarativeAction(expression, event) {
+  // Parses "functionName(arg1, arg2)" from data-action/data-change and calls the
+  // real function if it is allowlisted.
+  //
+  // Beginner takeaway:
+  // Centralized dispatch gives a clear place to validate and instrument UI
+  // actions, which is easier to maintain than many scattered inline handlers.
+  const text = String(expression || "").trim();
+  if (!text) {
+    return;
+  }
+
+  const match = text.match(/^([A-Za-z_$][\w$]*)\((.*)\)$/);
+  if (!match) {
+    consoleLog(`[Action] Invalid expression: ${text}`, "cl--error");
+    return;
+  }
+
+  const functionName = match[1];
+  if (!DECLARATIVE_ACTION_FUNCTIONS.has(functionName)) {
+    consoleLog(`[Action] Unsupported function: ${functionName}`, "cl--error");
+    return;
+  }
+
+  const fn = globalThis[functionName];
+  if (typeof fn !== "function") {
+    consoleLog(`[Action] Missing function: ${functionName}`, "cl--error");
+    return;
+  }
+
+  const argsSource = match[2].trim();
+  const args = argsSource
+    ? splitActionArguments(argsSource).map((token) => parseActionArgument(token, event))
+    : [];
+
+  fn(...args);
+}
+
+function attachDeclarativeEventHandlers() {
+  // Event delegation:
+  // We listen once at document level and react to matching elements via
+  // closest(). This scales better than wiring hundreds of individual listeners,
+  // including elements that are rendered later.
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element
+      ? event.target.closest("[data-action]")
+      : null;
+    if (!target) {
+      return;
+    }
+
+    runDeclarativeAction(target.getAttribute("data-action"), event);
+  });
+
+  document.addEventListener("change", (event) => {
+    const target = event.target instanceof Element
+      ? event.target.closest("[data-change]")
+      : null;
+    if (!target) {
+      return;
+    }
+
+    runDeclarativeAction(target.getAttribute("data-change"), event);
+  });
+}
+
 // ============================================================
 // SECTION: Initialisation
 // ============================================================
@@ -3038,6 +3291,8 @@ function initResizableTable(tableId) {
 /** Wire up all tabs, attach Enter key to connection form, and auto-open WebSocket. */
 function initUI() {
   loadUiPreferences();
+  // Register delegated handler system before user interactions begin.
+  attachDeclarativeEventHandlers();
 
   // Tab navigation
   document.querySelectorAll(".tab").forEach((btn) => {
