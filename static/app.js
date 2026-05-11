@@ -68,6 +68,23 @@ let lastObservedClipId = "";
 let lastObservedTransportSlotId = "";
 let lastObservedTimelineSlotId = "";
 let lastTimelineClipsKv = null;
+
+// Slot media file-size hydration architecture (beginner view):
+// 1) lastSlotMediaKv stores the most recent 206/520 disk list snapshot.
+// 2) slotMediaClipInfoByName caches file sizes by clip name.
+// 3) slotMediaPendingByName + queuedSlotMediaClipNames +
+//    slotMediaClipInfoInFlightName implement a one-at-a-time request queue.
+// This separation lets us render rows immediately, then fill file sizes as
+// clip info replies arrive, without blocking the UI.
+let lastSlotMediaKv = null;
+const slotMediaClipInfoByName = new Map();
+const slotMediaPendingByName = new Set();
+const queuedSlotMediaClipNames = [];
+let slotMediaClipInfoInFlightName = null;
+let slotMediaClipInfoInFlightTimeoutId = null;
+const SLOT_MEDIA_CLIP_INFO_RESPONSE_TIMEOUT_MS = 1_500;
+let lastSlotMediaNamesKey = "";
+let pendingManualClipInfoRequest = false;
 const knownSlotStates = {};
 let lastRecordAttemptAtMs = 0;
 let hasTransportStateHydratedForSession = false;
@@ -242,6 +259,15 @@ function handleServerMessage(message) {
       for (const key of Object.keys(knownSlotStates)) {
         delete knownSlotStates[key];
       }
+      slotMediaClipInfoByName.clear();
+      slotMediaPendingByName.clear();
+      queuedSlotMediaClipNames.length = 0;
+      slotMediaClipInfoInFlightName = null;
+      clearSlotMediaClipInfoInFlightTimeout();
+      lastSlotMediaNamesKey = "";
+      lastSlotMediaKv = null;
+      updateCurrentSlotMediaProgressBadge();
+      pendingManualClipInfoRequest = false;
       updateConnectionUI(false);
       stopWatchdog();
       stopTransportAutoRefresh();
@@ -360,6 +386,17 @@ function handleRawConsoleLine(rawLine) {
  * the backend emits alongside every "response" message that modifies state.
  */
 function handleParsedResponse(code, text, kv) {
+  // Advance clip-info queue on error responses (e.g. 112 clip not found) while
+  // a per-clip request is in-flight.  Explicit success codes are handled inside
+  // their own case blocks below; the default: branch handles the clip-info reply.
+  if (code >= 100 && code <= 199 && slotMediaClipInfoInFlightName !== null) {
+    slotMediaPendingByName.delete(slotMediaClipInfoInFlightName);
+    slotMediaClipInfoInFlightName = null;
+    clearSlotMediaClipInfoInFlightTimeout();
+    updateCurrentSlotMediaProgressBadge();
+    pumpSlotMediaClipInfoRequests();
+  }
+
   switch (code) {
     // ── 200 ok ─────────────────────────────────────────────────────────
     case 200:
@@ -488,10 +525,24 @@ function handleParsedResponse(code, text, kv) {
       showToast(`Connected to ${kv["model"] || "HyperDeck"}`, "ok");
       break;
 
-    // ── Capture format token from format: prepare response ─────────────
-    default:
+    // ── Capture format token / clip info response ─────────────────────
+    // The HyperDeck "clip info" command returns a response code that is not
+    // in the explicit list above, so it always falls through to here.
+    // 208/508 transport-info and other known codes are handled above and
+    // never reach this branch, preventing false queue advancement.
+    default: {
+      const isClipInfoResponse = maybeHandleClipInfoResponse(kv, slotMediaClipInfoInFlightName);
+      if (isClipInfoResponse) {
+        slotMediaClipInfoInFlightName = null;
+        clearSlotMediaClipInfoInFlightTimeout();
+        pumpSlotMediaClipInfoRequests();
+        if (pendingManualClipInfoRequest) {
+          displayResultBox("clipInfoResult", kv);
+          pendingManualClipInfoRequest = false;
+        }
+      }
+
       // Some firmware versions return a custom code for the format token.
-      // The token is a key like "token: <value>" in the kv pairs.
       if (kv.token) {
         pendingFormatToken = kv.token;
         document.getElementById("fmtToken").value = pendingFormatToken;
@@ -499,6 +550,7 @@ function handleParsedResponse(code, text, kv) {
         showToast(`Format token received: ${pendingFormatToken}`, "warn");
       }
       break;
+    }
   }
 
   if (code === 110 && Date.now() - lastRecordAttemptAtMs < 4000) {
@@ -1845,6 +1897,7 @@ function applyClipsRebuild() {
 function applyClipInfo() {
   const clipId = document.getElementById("clipInfoId").value.trim();
   const name   = document.getElementById("clipInfoName").value.trim();
+  pendingManualClipInfoRequest = true;
   if (clipId) {
     sendCmd(`clip info: clip id: ${clipId}`);
   } else if (name) {
@@ -1913,6 +1966,214 @@ function looksLikeV2ClipEntry(data) {
     && looksLikeTimecode(fields[3]);
 }
 
+function parseClipId(value) {
+  const parsed = Number.parseInt(String(value || "").trim(), 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function normalizeTimelineClipInfoValue(value) {
+  const text = String(value || "").trim();
+  return text || "";
+}
+
+// There should be at most one active timeout for the in-flight clip-info
+// request. Clearing first avoids orphaned timers that could corrupt queue state.
+function clearSlotMediaClipInfoInFlightTimeout() {
+  if (slotMediaClipInfoInFlightTimeoutId !== null) {
+    clearTimeout(slotMediaClipInfoInFlightTimeoutId);
+    slotMediaClipInfoInFlightTimeoutId = null;
+  }
+}
+
+// HyperDeck field names vary by firmware, so we probe several keys and return
+// the first non-empty value.
+function getFirstClipInfoValue(kv, keys) {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(kv, key)) {
+      continue;
+    }
+    const value = normalizeTimelineClipInfoValue(kv[key]);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+// Build the list of visible clip names from the latest disk list snapshot.
+// We reuse this in multiple places so progress math is always based on the
+// same source of truth as the table rows.
+function getCurrentSlotMediaNamesFromLastKv() {
+  if (!lastSlotMediaKv || typeof lastSlotMediaKv !== "object") {
+    return [];
+  }
+  return Object.entries(lastSlotMediaKv)
+    .filter(([key]) => /^\d+$/.test(key))
+    .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10))
+    .map(([, data]) => parseDiskListEntry(data).name)
+    .filter((name) => name && name !== "—");
+}
+
+// Update the small badge next to "Current Slot Media".
+// Yellow means "still loading some sizes" and green means "all loaded".
+function updateCurrentSlotMediaProgressBadge() {
+  const badge = document.getElementById("currentSlotMediaProgressBadge");
+  if (!badge) {
+    return;
+  }
+
+  const names = getCurrentSlotMediaNamesFromLastKv();
+  const total = names.length;
+  if (total === 0) {
+    badge.style.display = "none";
+    return;
+  }
+
+  let loaded = 0;
+  for (const name of names) {
+    const fileSize = String(slotMediaClipInfoByName.get(name)?.fileSize || "").trim();
+    if (fileSize) {
+      loaded += 1;
+    }
+  }
+
+  const pending = total - loaded;
+  badge.textContent = `Sizes ${loaded}/${total}`;
+  badge.style.display = "inline-block";
+  badge.style.background = pending > 0 ? "var(--accent-yellow)" : "var(--accent-green)";
+  badge.style.color = pending > 0 ? "#111" : "#fff";
+}
+
+// Consume one clip info response and fold it into cache.
+// Called only from handleParsedResponse(default), which isolates us from
+// explicit response codes like 208 transport info.
+function maybeHandleClipInfoResponse(kv, fallbackName = null) {
+  // Only called from the default: branch — not reached by any explicitly-handled
+  // response code (208, 206, etc.), so this is safely scoped to clip info replies.
+  if (!kv || typeof kv !== "object") {
+    return false;
+  }
+
+  // Match by the name field the deck echoes back, or fall back to what we sent.
+  const clipName = String(kv.name || kv["clip name"] || fallbackName || "").trim();
+  if (!clipName) {
+    return false;
+  }
+
+  const fileSize = getFirstClipInfoValue(kv, ["file size", "clip size", "size", "size bytes"]);
+
+  const previous = slotMediaClipInfoByName.get(clipName) || { fileSize: "" };
+  const next = {
+    fileSize: fileSize || previous.fileSize,
+  };
+
+  slotMediaClipInfoByName.set(clipName, next);
+  slotMediaPendingByName.delete(clipName);
+  updateCurrentSlotMediaProgressBadge();
+
+  const changed = previous.fileSize !== next.fileSize;
+  if (changed && lastSlotMediaKv) {
+    renderCurrentSlotMediaTable(lastSlotMediaKv);
+  }
+
+  return true;
+}
+
+// Keep cache/queue state aligned with the currently visible disk list rows.
+// If the slot changes or rows disappear, stale queue items are removed so we
+// do not keep requesting file sizes for clips that are no longer on screen.
+function syncSlotMediaClipInfoCache(names) {
+  const normalizedNames = Array.from(new Set((names || [])
+    .map((n) => String(n || "").trim())
+    .filter(Boolean)));
+  const nextKey = normalizedNames.join("\x00");
+  if (nextKey === lastSlotMediaNamesKey) {
+    return;
+  }
+
+  lastSlotMediaNamesKey = nextKey;
+  const nameSet = new Set(normalizedNames);
+
+  for (const name of slotMediaClipInfoByName.keys()) {
+    if (!nameSet.has(name)) {
+      slotMediaClipInfoByName.delete(name);
+    }
+  }
+  for (const name of slotMediaPendingByName) {
+    if (!nameSet.has(name)) {
+      slotMediaPendingByName.delete(name);
+    }
+  }
+
+  for (let i = queuedSlotMediaClipNames.length - 1; i >= 0; i -= 1) {
+    if (!nameSet.has(queuedSlotMediaClipNames[i])) {
+      queuedSlotMediaClipNames.splice(i, 1);
+    }
+  }
+
+  if (slotMediaClipInfoInFlightName !== null && !nameSet.has(slotMediaClipInfoInFlightName)) {
+    slotMediaClipInfoInFlightName = null;
+    clearSlotMediaClipInfoInFlightTimeout();
+  }
+
+  updateCurrentSlotMediaProgressBadge();
+}
+
+// Queue runner: sends exactly one clip-info command at a time.
+// We only send the next request after success, timeout, or error clears the
+// in-flight slot. This prevents overrunning the deck with parallel requests.
+function pumpSlotMediaClipInfoRequests() {
+  if (!isSocketOpen() || slotMediaClipInfoInFlightName !== null) {
+    return;
+  }
+
+  const nextName = queuedSlotMediaClipNames.shift();
+  if (typeof nextName !== "string" || !nextName) {
+    return;
+  }
+
+  slotMediaClipInfoInFlightName = nextName;
+  updateCurrentSlotMediaProgressBadge();
+  clearSlotMediaClipInfoInFlightTimeout();
+  slotMediaClipInfoInFlightTimeoutId = setTimeout(() => {
+    if (slotMediaClipInfoInFlightName === null) {
+      return;
+    }
+    slotMediaPendingByName.delete(slotMediaClipInfoInFlightName);
+    slotMediaClipInfoInFlightName = null;
+    slotMediaClipInfoInFlightTimeoutId = null;
+    updateCurrentSlotMediaProgressBadge();
+    pumpSlotMediaClipInfoRequests();
+  }, SLOT_MEDIA_CLIP_INFO_RESPONSE_TIMEOUT_MS);
+
+  sendCmd(`clip info: name: ${nextName}`, { quiet: true });
+}
+
+// Public enqueue function used by renderCurrentSlotMediaTable.
+// It deduplicates names against both cache and pending set, then starts the
+// queue runner if idle.
+function requestSlotMediaClipInfo(names) {
+  if (!isSocketOpen()) {
+    return;
+  }
+
+  for (const name of names || []) {
+    const n = String(name || "").trim();
+    if (!n) {
+      continue;
+    }
+    if (slotMediaClipInfoByName.has(n) || slotMediaPendingByName.has(n)) {
+      continue;
+    }
+
+    slotMediaPendingByName.add(n);
+    queuedSlotMediaClipNames.push(n);
+  }
+
+  updateCurrentSlotMediaProgressBadge();
+  pumpSlotMediaClipInfoRequests();
+}
+
 /**
  * Render the clips table from a 205 / 519 clips info response.
  * kv keys are clip IDs (integers); values are space-separated fields.
@@ -1943,7 +2204,7 @@ function renderClipsTable(kv) {
     table.classList.toggle("clip-table--v1", !isV2);
     table.classList.toggle("clip-table--v2", isV2);
   }
-  const colSpan = isV2 ? 5 : 6; // includes left Play + right Remove columns
+  const colSpan = isV2 ? 7 : 8; // includes left Play + right Remove columns
 
   if (clipEntries.length === 0) {
     tbody.innerHTML = `<tr><td colspan="${colSpan}" style="color:var(--text-muted);text-align:center;padding:10px">
@@ -1955,6 +2216,9 @@ function renderClipsTable(kv) {
     ? parseInt(deviceState.transport_clip_id, 10)
     : -1;
   const clipIdOffset = clipEntries.some(([idx]) => String(idx).trim() === "0") ? 1 : 0;
+  const timelineClipIds = clipEntries
+    .map(([idx]) => parseInt(idx, 10) + clipIdOffset)
+    .filter((clipId) => Number.isInteger(clipId));
 
   tbody.innerHTML = clipEntries.map(([idx, data]) => {
     const fields = data.trim().split(/\s+/);
@@ -2018,53 +2282,70 @@ function parseDiskListEntry(data) {
   if (fields.length < 4) {
     return {
       name: raw || "—",
-      codec: "—",
+      fileFormat: "—",
       format: "—",
       duration: "—",
     };
   }
 
-  // Version 2 style: codec format duration folder/filename
+  // Version 2 style: file format, video format, duration, then name
   if (looksLikeDuration(fields[2])) {
     return {
       name: fields.slice(3).join(" ") || "—",
-      codec: fields[0] || "—",
+      fileFormat: fields[0] || "—",
       format: fields[1] || "—",
       duration: fields[2] || "—",
     };
   }
 
-  // Version 1 style: filename codec format duration
+  // Version 1 style: name, file format, video format, duration
   return {
     name: fields[0] || "—",
-    codec: fields[1] || "—",
+    fileFormat: fields[1] || "—",
     format: fields[2] || "—",
     duration: fields.slice(3).join(" ") || "—",
   };
 }
 
+/**
+ * Render current slot media rows from a 206/520 disk list payload.
+ * Architecture summary for students:
+ * - First pass: render table immediately from disk list so UI feels instant.
+ * - Second pass: enqueue per-row clip info requests by clip name.
+ * - As responses arrive, maybeHandleClipInfoResponse updates cache and re-renders
+ *   only to fill in file size values.
+ */
 function renderCurrentSlotMediaTable(kv) {
   const tbody = document.getElementById("currentSlotMediaTableBody");
   if (!tbody) return;
+
+  lastSlotMediaKv = kv;
 
   const mediaEntries = Object.entries(kv)
     .filter(([key]) => /^\d+$/.test(key))
     .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10));
 
   if (mediaEntries.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-cell-empty">
+    syncSlotMediaClipInfoCache([]);
+    tbody.innerHTML = `<tr><td colspan="6" class="table-cell-empty">
       No media entries returned for current slot.</td></tr>`;
     return;
   }
 
+  const mediaNames = mediaEntries.map(([, data]) => parseDiskListEntry(data).name).filter((n) => n && n !== "—");
+  syncSlotMediaClipInfoCache(mediaNames);
+
   tbody.innerHTML = mediaEntries.map(([idx, data]) => {
     const parsed = parseDiskListEntry(data);
+    const clipInfo = slotMediaClipInfoByName.get(parsed.name) || {};
+    const fileSize = clipInfo.fileSize || (slotMediaPendingByName.has(parsed.name) ? "..." : "—");
     return `<tr>
       <td>${escapeHtml(idx)}</td>
       <td class="clip-name" title="${escapeHtml(parsed.name)}">${escapeHtml(parsed.name)}</td>
-      <td>${escapeHtml(parsed.codec)}</td>
+      <td>${escapeHtml(parsed.fileFormat)}</td>
       <td>${escapeHtml(parsed.format)}</td>
       <td>${escapeHtml(parsed.duration)}</td>
+      <td>${escapeHtml(fileSize)}</td>
     </tr>`;
   }).join("");
 
@@ -2077,6 +2358,8 @@ function renderCurrentSlotMediaTable(kv) {
     row.title = "Double-click to append this clip to timeline";
     row.addEventListener("dblclick", () => appendCurrentSlotMediaClipToTimeline(clipName));
   }
+
+  requestSlotMediaClipInfo(mediaNames);
 }
 
 function maybeRenderCurrentSlotMediaTable(kv) {
@@ -2727,6 +3010,9 @@ function activateTab(tabName) {
   });
 
   if (tabName === "clips" && deviceState.is_connected === true) {
+    if (lastTimelineClipsKv) {
+      renderClipsTable(lastTimelineClipsKv);
+    }
     applyClipsGet();
   }
 

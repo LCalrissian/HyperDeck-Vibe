@@ -484,6 +484,7 @@
     <div class="card card--full">
       <div class="card__title-row">
         <h2 class="card__title">Current Slot Media - <span id="currentSlotMediaSlotId">—</span></h2>
+        <span class="badge" id="currentSlotMediaProgressBadge" style="display:none"></span>
       </div>
       <p class="hint">Automatically lists media files available on the currently selected slot when this tab is opened.</p>
       <p class="hint">Double-click a clip to append it to the timeline.</p>
@@ -493,11 +494,11 @@
         <table class="clip-table clip-table--resizable" id="currentSlotMediaTable">
           <thead>
             <tr>
-              <th style="width:72px">ID</th><th style="width:320px">Name / Path</th><th>Codec</th><th>Format</th><th>Duration</th>
+              <th style="width:72px">ID</th><th style="width:320px">Name / Path</th><th>File Format</th><th>Video Format</th><th>Duration</th><th>File Size</th>
             </tr>
           </thead>
           <tbody id="currentSlotMediaTableBody">
-            <tr><td colspan="5" class="table-cell-empty">
+            <tr><td colspan="6" class="table-cell-empty">
               Open the Slots / Disk tab while connected to populate files for the active slot.</td></tr>
           </tbody>
         </table>
