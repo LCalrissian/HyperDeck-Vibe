@@ -26,18 +26,20 @@
 <!-- ═══════════════════════════════════════════════════════════
      LEFT SIDEBAR  (connection + live transport status)
      ═══════════════════════════════════════════════════════════ -->
-<aside class="sidebar">
+<aside class="sidebar" id="dashboardSidebar">
   <section class="card">
     <h2 class="card__title card__title--centered">Dashboard</h2>
     <div class="timecode-display" id="sidebarTimecode" data-action="onSidebarTimecodeClick(event)">--:--:--:--</div>
 
-    <div class="sidebar-status-grid">
+    <div class="sidebar-status-grid" id="sidebarStatusGrid">
       <div class="sidebar-status-item"><span class="info-label">Status</span><span class="status-badge" id="tsStatus">—</span></div>
-      <div class="sidebar-status-item sidebar-status-item--right sidebar-status-item--clickable" data-action="onSidebarRemoteIndicatorClick(event)"><span class="sidebar-dot-label">Remote</span><span class="dot dot--off" id="sidebarDotRemote"></span></div>
+      <div class="sidebar-status-item sidebar-status-item--right sidebar-status-item--clickable" id="sidebarStatusRemoteItem" data-action="onSidebarRemoteIndicatorClick(event)"><span class="sidebar-dot-label">Remote</span><span class="dot dot--off" id="sidebarDotRemote"></span></div>
       <div class="sidebar-status-item"><span class="info-label">Format</span><span class="status-badge stopped" id="tsFormat">—</span></div>
-      <div class="sidebar-status-item sidebar-status-item--right"><span class="sidebar-dot-label">Ref&nbsp;Lock</span><span class="dot dot--off" id="sidebarDotRefLock"></span></div>
+      <div class="sidebar-status-item sidebar-status-item--right" id="sidebarStatusRefLockItem"><span class="sidebar-dot-label">Ref&nbsp;Lock</span><span class="dot dot--off" id="sidebarDotRefLock"></span></div>
       <div class="sidebar-status-item sidebar-status-item--span-2 sidebar-status-item--center" id="tsPlayRangeRow" hidden><span class="status-badge playrange-set playrange-jump-indicator" id="tsPlayRange" title="Show Play Range section">PLAY RANGE SET</span></div>
     </div>
+
+    <div id="sidebarPinnedTransportSlot"></div>
 
     <div id="sidebarDeviceSection" style="display:none">
       <hr class="divider" />
@@ -45,7 +47,7 @@
       <h2 class="card__title card__title--centered">Device</h2>
       <table class="info-table">
         <tr><td id="devNameLabel">Name</td> <td id="devNameValue">—</td></tr>
-        <tr><td>Model</td>    <td id="devModel">—</td></tr>
+        <tr id="devModelRow"><td>Model</td>    <td id="devModel">—</td></tr>
       </table>
     </div>
 
@@ -133,32 +135,6 @@
         <em>remote: override: true</em> on the Advanced tab, or enable remote
         on the HyperDeck front panel.
       </p>
-      <hr class="divider" />
-      <p class="hint">Common error codes:</p>
-      <div class="codes-list">
-        <strong>100</strong> syntax error &nbsp;·&nbsp;
-        <strong>101</strong> unsupported parameter &nbsp;·&nbsp;
-        <strong>102</strong> invalid value &nbsp;·&nbsp;
-        <strong>103</strong> unsupported &nbsp;·&nbsp;
-        <strong>104</strong> disk full &nbsp;·&nbsp;
-        <strong>105</strong> no disk &nbsp;·&nbsp;
-        <strong>106</strong> disk error &nbsp;·&nbsp;
-        <strong>107</strong> timeline empty &nbsp;·&nbsp;
-        <strong>108</strong> internal error &nbsp;·&nbsp;
-        <strong>109</strong> out of range &nbsp;·&nbsp;
-        <strong>110</strong> no input &nbsp;·&nbsp;
-        <strong>111</strong> remote control disabled &nbsp;·&nbsp;
-        <strong>112</strong> clip not found &nbsp;·&nbsp;
-        <strong>120</strong> connection failed &nbsp;·&nbsp;
-        <strong>121</strong> authentication failed &nbsp;·&nbsp;
-        <strong>122</strong> authentication required &nbsp;·&nbsp;
-        <strong>150</strong> invalid state &nbsp;·&nbsp;
-        <strong>151</strong> invalid codec &nbsp;·&nbsp;
-        <strong>160</strong> invalid format &nbsp;·&nbsp;
-        <strong>161</strong> invalid token &nbsp;·&nbsp;
-        <strong>162</strong> format not prepared &nbsp;·&nbsp;
-        <strong>163</strong> parameterized single line command not supported
-      </div>
     </div>
   </div><!-- /tab-device -->
 
@@ -166,7 +142,8 @@
        CONNECTIONS  – saved HyperDeck targets for quick recall
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-connections">
-    <div class="card card--full">
+    <!-- New Connection -->
+    <div class="card">
       <h2 class="card__title">New Connection</h2>
       <p class="hint">
         Save a friendly name with Host/IP and Port. Click any entry to populate the Connection card on the left.
@@ -188,13 +165,15 @@
         </div>
       </div>
 
-      <div class="btn-row u-mb-sm">
+      <div class="btn-row">
         <button class="btn" data-action="uiConnect()">Connect</button>
         <button class="btn btn--primary" data-action="addConnectionProfileFromForm()">Save Connection</button>
       </div>
+    </div>
 
-      <h2 class="card__title u-mt-sm">Saved Connections</h2>
-
+    <!-- Saved Connections -->
+    <div class="card">
+      <h2 class="card__title">Saved Connections</h2>
       <div id="savedConnectionsList" class="saved-connections-list"></div>
     </div>
   </div><!-- /tab-connections -->
@@ -206,24 +185,26 @@
   <div class="tab-panel active" id="tab-transport">
 
     <!-- Play -->
-    <div class="card">
+    <div id="transportPlaybackAnchor"></div>
+    <div class="card" id="transportPlaybackCard">
       <h2 class="card__title">Playback</h2>
       <div class="transport-btns">
-        <button class="tbtn" data-action="sendCmd('goto: clip id: -1')" title="Previous clip">⏮</button>
+        <button class="tbtn" id="transportSkipBackBtn" data-action="sendCmd('goto: clip id: -1')" title="Previous clip">⏮</button>
         <button class="tbtn tbtn--clip-nav" id="transportRewindBtn" data-action="sendCmd('shuttle: speed: -5000')" title="Rewind">◀◀</button>
         <button class="tbtn tbtn--stop" id="transportStopBtn" data-action="sendCmd('stop')" title="Stop">⏹</button>
         <button class="tbtn tbtn--play"   id="transportPlayBtn" data-action="applyPlay()"       title="Play">⏵</button>
         <button class="tbtn tbtn--record" id="transportRecordBtn" data-action="applyRecord()"     title="Record">⏺</button>
         <button class="tbtn tbtn--clip-nav" id="transportForwardBtn" data-action="sendCmd('shuttle: speed: 5000')"   title="Fast Forward">▶▶</button>
-        <button class="tbtn" data-action="sendCmd('goto: clip id: +1')" title="Next clip">⏭</button>
+        <button class="tbtn" id="transportSkipForwardBtn" data-action="sendCmd('goto: clip id: +1')" title="Next clip">⏭</button>
+        <span class="transport-btns-break" aria-hidden="true"></span>
       </div>
 
       <div class="playback-toggle-inline">
-        <div class="playback-toggle-item">
+        <div class="playback-toggle-item" id="playLoopItem">
           <label for="playLoop">Loop</label>
           <label class="toggle"><input type="checkbox" id="playLoop" /><span class="slider"></span></label>
         </div>
-        <div class="playback-toggle-item">
+        <div class="playback-toggle-item" id="playSingleClipItem">
           <label for="playSingleClip">Single Clip</label>
           <label class="toggle"><input type="checkbox" id="playSingleClip" /><span class="slider"></span></label>
         </div>
@@ -246,19 +227,6 @@
         <div class="dash-cell" id="dashDynRangeCell"><div class="dash-cell__label">Dynamic Range</div>
           <div class="dash-cell__value" id="dashDynRange">—</div></div>
       </div>
-    </div>
-
-    <!-- Jog -->
-    <div class="card" id="transportJogCard">
-      <h2 class="card__title">Jog</h2>
-      <p class="hint">Frame-accurate positioning. Supports absolute or relative ±timecode.</p>
-      <div class="field-grid">
-        <div class="field-row">
-          <label for="jogTimecode">Timecode</label>
-          <input id="jogTimecode" type="text" placeholder="±00:00:00:00" class="mono" />
-        </div>
-      </div>
-      <button class="btn btn--primary" data-action="applyJog()">Jog</button>
     </div>
 
     <!-- Shuttle -->
@@ -796,15 +764,84 @@
 
     <div class="card card--full">
       <h2 class="card__title">Interface Preferences</h2>
+
+      <h3 class="section-heading">Tab Visibility</h3>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgShowTimelineTab">Show Timeline tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTimelineTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowMediaTab">Show Media tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowDeviceTab">Show Device tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDeviceTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowNasTab">Show NAS tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowNasTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowSlateTab">Show Slate tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowSlateTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowAdvancedTab">Show Advanced tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowAdvancedTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowConsoleTab">Show Console tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowConsoleTab" checked /><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <h3 class="section-heading">Dashboard</h3>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgShowDashboard">Show Dashboard</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDashboard" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowDashboardRemote">Show Remote</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDashboardRemote" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowDashboardRefLock">Show Ref Lock</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDashboardRefLock" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowDashboardDeviceInfo">Show Device Info section</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDashboardDeviceInfo" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowDashboardModel">Show Model</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDashboardModel" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgPinTransportToDashboard2">Pin Transport Controls to Dashboard</label>
+          <label class="toggle"><input type="checkbox" id="cfgPinTransportToDashboard2" /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgPinDashboardToTopMobile">Pin Dashboard to top (mobile only)</label>
+          <label class="toggle"><input type="checkbox" id="cfgPinDashboardToTopMobile" /><span class="slider"></span></label>
+        </div>
+      </div>
+
       <h3 class="section-heading">Transport Tab</h3>
       <div class="field-grid">
         <div class="field-row">
-          <label for="cfgShowDynRange">Show Dynamic Range in Transport Info</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowDynRange" checked /><span class="slider"></span></label>
+          <label for="cfgShowTransportLoop">Show Loop toggle</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTransportLoop" checked /><span class="slider"></span></label>
         </div>
         <div class="field-row">
-          <label for="cfgShowTransportJog">Show Jog section</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowTransportJog" checked /><span class="slider"></span></label>
+          <label for="cfgShowTransportSingleClip">Show Single Clip toggle</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTransportSingleClip" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowDynRange">Show Dynamic Range in Transport Info</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDynRange" checked /><span class="slider"></span></label>
         </div>
         <div class="field-row">
           <label for="cfgShowTransportCustomRecord">Show Record with Custom Clip Name</label>
@@ -821,6 +858,10 @@
         <div class="field-row">
           <label for="cfgShowTransportPlayRange">Show Play Range section</label>
           <label class="toggle"><input type="checkbox" id="cfgShowTransportPlayRange" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgPinTransportToDashboard">Pin Transport Controls to Dashboard</label>
+          <label class="toggle"><input type="checkbox" id="cfgPinTransportToDashboard" /><span class="slider"></span></label>
         </div>
       </div>
 
@@ -857,38 +898,6 @@
         <div class="field-row">
           <label for="cfgShowMediaFormatDisk">Show Format Disk</label>
           <label class="toggle"><input type="checkbox" id="cfgShowMediaFormatDisk" checked /><span class="slider"></span></label>
-        </div>
-      </div>
-
-      <h3 class="section-heading">Tab Visibility</h3>
-      <div class="field-grid">
-        <div class="field-row">
-          <label for="cfgShowTimelineTab">Show Timeline tab</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowTimelineTab" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="cfgShowMediaTab">Show Media tab</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowMediaTab" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="cfgShowDeviceTab">Show Device tab</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowDeviceTab" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="cfgShowNasTab">Show NAS tab</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowNasTab" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="cfgShowSlateTab">Show Slate tab</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowSlateTab" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="cfgShowAdvancedTab">Show Advanced tab</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowAdvancedTab" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="cfgShowConsoleTab">Show Console tab</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowConsoleTab" checked /><span class="slider"></span></label>
         </div>
       </div>
 
@@ -1226,8 +1235,6 @@
       <div class="btn-row">
         <button class="btn btn--sm" data-action="sendCmd('ping')" title="ping → 200 ok">Ping</button>
         <button class="btn btn--sm" data-action="sendCmd('help')" title="help → 201 help:">Help</button>
-        <button class="btn btn--sm" data-action="sendCmd('?')"   title="? → 201 help:">?</button>
-        <button class="btn btn--sm" data-action="sendCmd('commands')" title="commands → 212 commands: (XML)">Commands (XML)</button>
         <button class="btn btn--sm" data-action="sendCmd('uptime')"   title="uptime — time since last boot">Uptime</button>
         <button class="btn btn--sm" data-action="sendCmd('cache info')">Cache Info</button>
       </div>
@@ -1276,13 +1283,41 @@
       <button class="btn btn--sm" data-action="sendCmd('quit')">Quit</button>
     </div>
 
-    <!-- Raw command -->
+    <!-- Commands XML download -->
     <div class="card">
-      <h2 class="card__title">Raw Command</h2>
-      <p class="hint">Send any raw protocol command. Use <code>\n</code> for multiline blocks.</p>
-      <div class="field-row u-gap-xs">
-        <input id="rawCmd" type="text" class="mono" placeholder="e.g. transport info" />
-        <button class="btn btn--primary btn--sm" data-action="sendRawCommand()">Send</button>
+      <h2 class="card__title">Command List XML</h2>
+      <p class="hint">Downloads the HyperDeck command list as an XML file.</p>
+      <button class="btn btn--primary btn--sm" data-action="downloadCommandListXml()">
+        Download commands.xml
+      </button>
+    </div>
+
+    <!-- Common error codes -->
+    <div class="card">
+      <h2 class="card__title">Common Error Codes</h2>
+      <div class="codes-list">
+        <strong>100</strong> syntax error &nbsp;·&nbsp;
+        <strong>101</strong> unsupported parameter &nbsp;·&nbsp;
+        <strong>102</strong> invalid value &nbsp;·&nbsp;
+        <strong>103</strong> unsupported &nbsp;·&nbsp;
+        <strong>104</strong> disk full &nbsp;·&nbsp;
+        <strong>105</strong> no disk &nbsp;·&nbsp;
+        <strong>106</strong> disk error &nbsp;·&nbsp;
+        <strong>107</strong> timeline empty &nbsp;·&nbsp;
+        <strong>108</strong> internal error &nbsp;·&nbsp;
+        <strong>109</strong> out of range &nbsp;·&nbsp;
+        <strong>110</strong> no input &nbsp;·&nbsp;
+        <strong>111</strong> remote control disabled &nbsp;·&nbsp;
+        <strong>112</strong> clip not found &nbsp;·&nbsp;
+        <strong>120</strong> connection failed &nbsp;·&nbsp;
+        <strong>121</strong> authentication failed &nbsp;·&nbsp;
+        <strong>122</strong> authentication required &nbsp;·&nbsp;
+        <strong>150</strong> invalid state &nbsp;·&nbsp;
+        <strong>151</strong> invalid codec &nbsp;·&nbsp;
+        <strong>160</strong> invalid format &nbsp;·&nbsp;
+        <strong>161</strong> invalid token &nbsp;·&nbsp;
+        <strong>162</strong> format not prepared &nbsp;·&nbsp;
+        <strong>163</strong> parameterized single line command not supported
       </div>
     </div>
 
@@ -1298,6 +1333,9 @@
         <div class="btn-row">
           <label class="console-option-label">
             <input type="checkbox" id="consoleAutoScroll" checked /> Auto-scroll
+          </label>
+          <label class="console-option-label">
+            <input type="checkbox" id="consoleAutoUpdate" checked /> Auto-update
           </label>
           <label class="console-option-label">
             <input type="checkbox" id="consoleHide208" /> Hide 208

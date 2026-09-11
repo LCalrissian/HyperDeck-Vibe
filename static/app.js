@@ -34,6 +34,7 @@
 let deviceState = {};
 let pendingTransportStateOverlay = {};
 let pendingWatchdogPings = 0;
+let pendingCommandListDownload = false;
 
 /** Current WebSocket instance (null when disconnected). */
 let socket = null;
@@ -123,6 +124,7 @@ let lastSyncedConnectionModelKey = "";
 let draggedConnectionId = null;
 let didConnectionDrag = false;
 let lastConnectionProfilesRenderKey = "";
+let lastSidebarConnectionState = false;
 
 const MAX_CONSOLE_LINES = 500;
 let suppressCurrent208RawConsoleBlock = false;
@@ -130,11 +132,13 @@ const UI_PREFERENCES_STORAGE_KEY = "hyperdeckVibe.uiPreferences";
 
 const uiPreferences = {
   showDynamicRangeInTransportInfo: true,
-  showTransportJog: true,
   showTransportCustomRecord: true,
   showTransportShuttle: true,
   showTransportGoto: true,
   showTransportPlayRange: true,
+  showTransportLoop: true,
+  showTransportSingleClip: true,
+  pinTransportToDashboard: false,
   showTimelineAddClip: true,
   showMediaSlotInfo: true,
   showMediaRecordSpill: true,
@@ -149,6 +153,13 @@ const uiPreferences = {
   showSlateTab: true,
   showAdvancedTab: true,
   showConsoleTab: true,
+  consoleAutoUpdate: true,
+  showDashboard: true,
+  showDashboardRemote: true,
+  showDashboardRefLock: true,
+  showDashboardDeviceInfo: true,
+  showDashboardModel: true,
+  pinDashboardToTopMobile: false,
 };
 
 const SLOT_SELECT_COMMON_VIDEO_FORMATS = [
@@ -573,7 +584,12 @@ function handleParsedResponse(code, text, kv) {
 
     // ── 212  commands (XML) ────────────────────────────────────────────
     case 212:
-      displayResultBox("advUtilResult", kv);
+      if (pendingCommandListDownload) {
+        pendingCommandListDownload = false;
+        downloadTextFile("commands.xml", text || serializeKeyValuePayload(kv));
+      } else {
+        displayResultBox("advUtilResult", kv);
+      }
       break;
 
     // ── 213  deck rebooting ────────────────────────────────────────────
@@ -665,7 +681,11 @@ function handleParsedResponse(code, text, kv) {
     // ── 227  spill order ────────────────────────────────────────────────
     case 227:
       pendingSpillOrderQuery = false;
-      displayResultBoxFromPayload("spillOrderResult", kv, text);
+      if (!kv || Object.keys(kv).length === 0 && !String(text || "").trim()) {
+        displayResultBoxFromPayload("spillOrderResult", { "Spill order": "None" });
+      } else {
+        displayResultBoxFromPayload("spillOrderResult", kv, text);
+      }
       break;
 
     // ── 500  connection info (initial banner) ──────────────────────────
@@ -699,11 +719,6 @@ function handleParsedResponse(code, text, kv) {
       }
       break;
     }
-  }
-
-  if (pendingSpillOrderQuery && code >= 200 && code <= 299) {
-    pendingSpillOrderQuery = false;
-    displayResultBoxFromPayload("spillOrderResult", kv, text);
   }
 
   if (code === 110 && Date.now() - lastRecordAttemptAtMs < 4000) {
@@ -1642,12 +1657,10 @@ function updateConnectionUI(isConnected, host = "", port = "") {
   const dot        = document.getElementById("statusDot");
   const connectionsTabBtn = document.getElementById("connectionsTabBtn");
   const sidebarTimecode = document.getElementById("sidebarTimecode");
-  const sidebarDeviceSection = document.getElementById("sidebarDeviceSection");
   syncTopbarConnectionIndicator(isConnected, host, port);
   syncSidebarDeviceIdentity(isConnected, host, port);
-  if (sidebarDeviceSection) {
-    sidebarDeviceSection.style.display = isConnected ? "" : "none";
-  }
+  lastSidebarConnectionState = isConnected;
+  applySidebarDeviceSectionVisibility();
 
   if (isConnected) {
     dot.className = "dot dot--on";
@@ -2114,13 +2127,6 @@ function quickPlay() { sendCmd("play"); }
 /** Quick record shortcut used by dashboard/sidebar buttons. */
 function quickRecord() { sendCmd("record"); }
 
-/** Build and send the "jog" command. */
-function applyJog() {
-  const tc = document.getElementById("jogTimecode").value.trim();
-  if (!tc) { showToast("Enter a timecode", "error"); return; }
-  sendCmd(`jog: timecode: ${tc}`);
-}
-
 /** Build and send the "shuttle" command. */
 function applyShuttle() {
   const speed = document.getElementById("shuttleSpeed").value.trim();
@@ -2332,7 +2338,7 @@ function applySpillOrderQuery() {
   const el = document.getElementById("spillOrderResult");
   if (el) {
     el.hidden = false;
-    el.textContent = "Querying spill order...";
+    el.textContent = "Waiting for spill order response...";
   }
   sendCmd("spill order", { quiet: true });
 }
@@ -3280,13 +3286,28 @@ function confirmReboot() {
   }
 }
 
-/** Send a raw command from the Advanced tab input. */
-function sendRawCommand() {
-  const el  = document.getElementById("rawCmd");
-  const cmd = el.value.trim().replace(/\\n/g, "\n");
-  if (!cmd) return;
-  sendCmd(cmd);
-  el.value = "";
+/** Request and download the HyperDeck command list XML. */
+function downloadCommandListXml() {
+  pendingCommandListDownload = true;
+  sendCmd("commands", { quiet: true });
+}
+
+/** Convert parsed response data into readable text when no raw body is available. */
+function serializeKeyValuePayload(payload) {
+  return Object.entries(payload || {})
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n");
+}
+
+/** Trigger a browser download for text returned by the deck. */
+function downloadTextFile(filename, contents) {
+  const blob = new Blob([String(contents || "")], { type: "application/xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 // ============================================================
@@ -3320,6 +3341,9 @@ function clearConsole() {
  * @param {string} cssClass – one of the .cl--* classes from style.css
  */
 function consoleLog(text, cssClass = "cl") {
+  if (document.getElementById("consoleAutoUpdate")?.checked === false) {
+    return;
+  }
   const out = document.getElementById("consoleOutput");
   if (!out) return;
 
@@ -3530,6 +3554,7 @@ function shouldArmTransportRefreshFromCommand(command) {
  * Attaches click handlers to all .tab buttons at init time.
  */
 function activateTab(tabName) {
+  document.querySelector(".content")?.classList.toggle("content--console-active", tabName === "console");
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tabName);
   });
@@ -3802,9 +3827,6 @@ function loadUiPreferences() {
     if (typeof parsed.showDynamicRangeInTransportInfo === "boolean") {
       uiPreferences.showDynamicRangeInTransportInfo = parsed.showDynamicRangeInTransportInfo;
     }
-    if (typeof parsed.showTransportJog === "boolean") {
-      uiPreferences.showTransportJog = parsed.showTransportJog;
-    }
     if (typeof parsed.showTransportCustomRecord === "boolean") {
       uiPreferences.showTransportCustomRecord = parsed.showTransportCustomRecord;
     }
@@ -3816,6 +3838,12 @@ function loadUiPreferences() {
     }
     if (typeof parsed.showTransportPlayRange === "boolean") {
       uiPreferences.showTransportPlayRange = parsed.showTransportPlayRange;
+    }
+    if (typeof parsed.showTransportLoop === "boolean") {
+      uiPreferences.showTransportLoop = parsed.showTransportLoop;
+    }
+    if (typeof parsed.showTransportSingleClip === "boolean") {
+      uiPreferences.showTransportSingleClip = parsed.showTransportSingleClip;
     }
     for (const key of [
       "showTimelineAddClip",
@@ -3832,6 +3860,14 @@ function loadUiPreferences() {
       "showSlateTab",
       "showAdvancedTab",
       "showConsoleTab",
+      "consoleAutoUpdate",
+      "pinTransportToDashboard",
+      "showDashboard",
+      "showDashboardRemote",
+      "showDashboardRefLock",
+      "showDashboardDeviceInfo",
+      "showDashboardModel",
+      "pinDashboardToTopMobile",
     ]) {
       if (typeof parsed[key] === "boolean") {
         uiPreferences[key] = parsed[key];
@@ -3852,14 +3888,15 @@ function saveUiPreferences() {
 
 function applyUiPreferencesToUI() {
   const showDynamicRange = uiPreferences.showDynamicRangeInTransportInfo !== false;
-  const showTransportJog = uiPreferences.showTransportJog !== false;
   const showTransportCustomRecord = uiPreferences.showTransportCustomRecord !== false;
   const showTransportShuttle = uiPreferences.showTransportShuttle !== false;
   const showTransportGoto = uiPreferences.showTransportGoto !== false;
   const showTransportPlayRange = uiPreferences.showTransportPlayRange !== false;
+  const showTransportLoop = uiPreferences.showTransportLoop !== false;
+  const showTransportSingleClip = uiPreferences.showTransportSingleClip !== false;
+  const pinTransportToDashboard = uiPreferences.pinTransportToDashboard === true;
 
   const dynRangeCell = document.getElementById("dashDynRangeCell");
-  const jogCard = document.getElementById("transportJogCard");
   const customRecordCard = document.getElementById("transportCustomRecordCard");
   const shuttleCard = document.getElementById("transportShuttleCard");
   const gotoCard = document.getElementById("transportGotoCard");
@@ -3884,9 +3921,6 @@ function applyUiPreferencesToUI() {
   if (dynRangeCell) {
     dynRangeCell.hidden = !showDynamicRange;
   }
-  if (jogCard) {
-    jogCard.hidden = !showTransportJog;
-  }
   if (customRecordCard) {
     customRecordCard.hidden = !showTransportCustomRecord;
   }
@@ -3900,12 +3934,92 @@ function applyUiPreferencesToUI() {
     playRangeCard.hidden = !showTransportPlayRange;
   }
 
+  setVisibility("playLoopItem", showTransportLoop);
+  setVisibility("playSingleClipItem", showTransportSingleClip);
+
   setCheckbox("cfgShowDynRange", showDynamicRange);
-  setCheckbox("cfgShowTransportJog", showTransportJog);
   setCheckbox("cfgShowTransportCustomRecord", showTransportCustomRecord);
   setCheckbox("cfgShowTransportShuttle", showTransportShuttle);
   setCheckbox("cfgShowTransportGoto", showTransportGoto);
   setCheckbox("cfgShowTransportPlayRange", showTransportPlayRange);
+  setCheckbox("cfgShowTransportLoop", showTransportLoop);
+  setCheckbox("cfgShowTransportSingleClip", showTransportSingleClip);
+  setCheckbox("cfgPinTransportToDashboard", pinTransportToDashboard);
+  setCheckbox("cfgPinTransportToDashboard2", pinTransportToDashboard);
+  applyTransportDashboardPin(pinTransportToDashboard);
+
+  const showDashboard = uiPreferences.showDashboard !== false;
+  const showDashboardRemote = uiPreferences.showDashboardRemote !== false;
+  const showDashboardRefLock = uiPreferences.showDashboardRefLock !== false;
+  const showDashboardDeviceInfo = uiPreferences.showDashboardDeviceInfo !== false;
+  const showDashboardModel = uiPreferences.showDashboardModel !== false;
+  const pinDashboardToTopMobile = uiPreferences.pinDashboardToTopMobile === true;
+
+  setVisibility("dashboardSidebar", showDashboard);
+  applyDashboardStatusItemVisibility(showDashboardRemote, showDashboardRefLock);
+  setVisibility("devModelRow", showDashboardModel);
+  applySidebarDeviceSectionVisibility();
+
+  setCheckbox("cfgShowDashboard", showDashboard);
+  setCheckbox("cfgShowDashboardRemote", showDashboardRemote);
+  setCheckbox("cfgShowDashboardRefLock", showDashboardRefLock);
+  setCheckbox("cfgShowDashboardDeviceInfo", showDashboardDeviceInfo);
+  setCheckbox("cfgShowDashboardModel", showDashboardModel);
+  document.body.classList.toggle("pin-dashboard-mobile", pinDashboardToTopMobile);
+}
+
+/** Hide/show the Remote and Ref Lock status items; collapse Status+Format onto one row when both are hidden. */
+function applyDashboardStatusItemVisibility(showRemote, showRefLock) {
+  const remoteItem = document.getElementById("sidebarStatusRemoteItem");
+  const refLockItem = document.getElementById("sidebarStatusRefLockItem");
+  const bothHidden = !showRemote && !showRefLock;
+  if (remoteItem) {
+    remoteItem.hidden = bothHidden;
+    remoteItem.style.visibility = !bothHidden && !showRemote ? "hidden" : "";
+  }
+  if (refLockItem) {
+    refLockItem.hidden = bothHidden;
+    refLockItem.style.visibility = !bothHidden && !showRefLock ? "hidden" : "";
+  }
+}
+
+/** Show the sidebar Device Info section only while connected and the preference is enabled. */
+function applySidebarDeviceSectionVisibility() {
+  const section = document.getElementById("sidebarDeviceSection");
+  if (!section) return;
+  const visible = lastSidebarConnectionState && uiPreferences.showDashboardDeviceInfo !== false;
+  section.style.display = visible ? "" : "none";
+}
+
+/** Relocate the Playback card between the Transport tab and the Dashboard sidebar. */
+function applyTransportDashboardPin(pinned) {
+  const card = document.getElementById("transportPlaybackCard");
+  const anchor = document.getElementById("transportPlaybackAnchor");
+  const slot = document.getElementById("sidebarPinnedTransportSlot");
+  if (!card || !anchor || !slot) return;
+  if (pinned) {
+    if (card.parentElement !== slot) slot.appendChild(card);
+  } else if (card.parentElement !== anchor.parentElement) {
+    anchor.after(card);
+  }
+}
+
+/** Toggle .transport-btns--wrapped when the transport buttons no longer fit on one row,
+ *  so CSS can regroup them into Record/Play/Stop + Skip/Rewind/FF/Skip rows. */
+function initTransportButtonsWrapObserver() {
+  const container = document.querySelector(".transport-btns");
+  if (!container || typeof ResizeObserver === "undefined") return;
+
+  const update = () => {
+    const buttons = Array.from(container.children).filter((el) => el.classList.contains("tbtn"));
+    if (buttons.length === 0) return;
+    const firstTop = buttons[0].offsetTop;
+    const wrapped = buttons.some((btn) => btn.offsetTop > firstTop + 2);
+    container.classList.toggle("transport-btns--wrapped", wrapped);
+  };
+
+  new ResizeObserver(update).observe(container);
+  update();
 }
 
 function onCfgShowDynRangeToggleChange() {
@@ -3915,11 +4029,19 @@ function onCfgShowDynRangeToggleChange() {
 }
 
 function onCfgShowTransportSectionsToggleChange() {
-  uiPreferences.showTransportJog = getChecked("cfgShowTransportJog");
   uiPreferences.showTransportCustomRecord = getChecked("cfgShowTransportCustomRecord");
   uiPreferences.showTransportShuttle = getChecked("cfgShowTransportShuttle");
   uiPreferences.showTransportGoto = getChecked("cfgShowTransportGoto");
   uiPreferences.showTransportPlayRange = getChecked("cfgShowTransportPlayRange");
+  uiPreferences.showTransportLoop = getChecked("cfgShowTransportLoop");
+  uiPreferences.showTransportSingleClip = getChecked("cfgShowTransportSingleClip");
+  saveUiPreferences();
+  applyUiPreferencesToUI();
+}
+
+/** Keep the Transport-tab and Dashboard-section pin toggles in sync regardless of which one changed. */
+function onCfgPinTransportToDashboardToggleChange(event) {
+  uiPreferences.pinTransportToDashboard = event.target.checked;
   saveUiPreferences();
   applyUiPreferencesToUI();
 }
@@ -3948,6 +4070,18 @@ function onCfgShowTabVisibilityChange() {
   uiPreferences.showConsoleTab = getChecked("cfgShowConsoleTab");
   saveUiPreferences();
   applyTabVisibilityPreferences();
+}
+
+/** Apply and save Dashboard sidebar visibility preferences. */
+function onCfgShowDashboardToggleChange() {
+  uiPreferences.showDashboard = getChecked("cfgShowDashboard");
+  uiPreferences.showDashboardRemote = getChecked("cfgShowDashboardRemote");
+  uiPreferences.showDashboardRefLock = getChecked("cfgShowDashboardRefLock");
+  uiPreferences.showDashboardDeviceInfo = getChecked("cfgShowDashboardDeviceInfo");
+  uiPreferences.showDashboardModel = getChecked("cfgShowDashboardModel");
+  uiPreferences.pinDashboardToTopMobile = getChecked("cfgPinDashboardToTopMobile");
+  saveUiPreferences();
+  applyUiPreferencesToUI();
 }
 
 /** Hide or show top-level tabs while keeping Transport, Preferences, and Connections available. */
@@ -4053,7 +4187,6 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "applyFormatPrepare",
   "applyGoto",
   "applyIdentify",
-  "applyJog",
   "applyNasAdd",
   "applyNasRemove",
   "applyNasSelect",
@@ -4078,6 +4211,7 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "clearConsole",
   "confirmClipsClear",
   "confirmReboot",
+  "downloadCommandListXml",
   "onSidebarRemoteIndicatorClick",
   "onSidebarTimecodeClick",
   "onTopbarStatusClick",
@@ -4085,7 +4219,6 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "removeClip",
   "sendCmd",
   "sendConsoleCommand",
-  "sendRawCommand",
   "toggleDashboardOverride",
   "toggleDashboardRemote",
   "uiConnect",
@@ -4247,6 +4380,10 @@ function initUI() {
   movePreviewModeCard();
   // Register delegated handler system before user interactions begin.
   attachDeclarativeEventHandlers();
+  document.getElementById("consoleAutoUpdate")?.addEventListener("change", (event) => {
+    uiPreferences.consoleAutoUpdate = event.target.checked;
+    saveUiPreferences();
+  });
 
   // Tab navigation
   document.querySelectorAll(".tab").forEach((btn) => {
@@ -4267,11 +4404,14 @@ function initUI() {
   document.getElementById("playLoop")?.addEventListener("change", onPlayLoopToggleChange);
   document.getElementById("playSingleClip")?.addEventListener("change", onPlaySingleClipToggleChange);
   document.getElementById("cfgShowDynRange")?.addEventListener("change", onCfgShowDynRangeToggleChange);
-  document.getElementById("cfgShowTransportJog")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
   document.getElementById("cfgShowTransportCustomRecord")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
   document.getElementById("cfgShowTransportShuttle")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
   document.getElementById("cfgShowTransportGoto")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
   document.getElementById("cfgShowTransportPlayRange")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("cfgShowTransportLoop")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("cfgShowTransportSingleClip")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("cfgPinTransportToDashboard")?.addEventListener("change", onCfgPinTransportToDashboardToggleChange);
+  document.getElementById("cfgPinTransportToDashboard2")?.addEventListener("change", onCfgPinTransportToDashboardToggleChange);
   document.getElementById("cfgShowTimelineAddClip")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
   document.getElementById("cfgShowMediaSlotInfo")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
   document.getElementById("cfgShowMediaRecordSpill")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
@@ -4286,21 +4426,23 @@ function initUI() {
   document.getElementById("cfgShowSlateTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
   document.getElementById("cfgShowAdvancedTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
   document.getElementById("cfgShowConsoleTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
+  document.getElementById("cfgShowDashboard")?.addEventListener("change", onCfgShowDashboardToggleChange);
+  document.getElementById("cfgShowDashboardRemote")?.addEventListener("change", onCfgShowDashboardToggleChange);
+  document.getElementById("cfgShowDashboardRefLock")?.addEventListener("change", onCfgShowDashboardToggleChange);
+  document.getElementById("cfgShowDashboardDeviceInfo")?.addEventListener("change", onCfgShowDashboardToggleChange);
+  document.getElementById("cfgShowDashboardModel")?.addEventListener("change", onCfgShowDashboardToggleChange);
+  document.getElementById("cfgPinDashboardToTopMobile")?.addEventListener("change", onCfgShowDashboardToggleChange);
   document.getElementById("tsPlayRange")?.addEventListener("click", jumpToPlayRangeSection);
   document.getElementById("playbackPlayRangeSetBadge")?.addEventListener("click", jumpToPlayRangeSection);
 
   initResizableTable("clipsTable");
   initResizableTable("currentSlotMediaTable");
+  initTransportButtonsWrapObserver();
 
   applyUiPreferencesToUI();
 
   document.getElementById("connProfilePort")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") addConnectionProfileFromForm();
-  });
-
-  // Enter key in raw command field on Advanced tab
-  document.getElementById("rawCmd")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") sendRawCommand();
   });
 
   // Open the WebSocket to the backend immediately on page load.

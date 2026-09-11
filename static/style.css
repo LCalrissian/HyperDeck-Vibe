@@ -109,10 +109,18 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
   background: var(--bg-surface); border-right: 1px solid var(--border);
   overflow-y: auto; padding: var(--sp-sm);
   display: flex; flex-direction: column; gap: var(--sp-sm);
+  position: sticky; top: var(--topbar-h);
+  height: calc(100vh - var(--topbar-h));
+  align-self: flex-start;
 }
 
 /* Main content */
 .content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-width: 0; }
+.content.content--console-active {
+  height: calc(100vh - var(--topbar-h));
+  min-height: 0;
+  overflow: hidden;
+}
 
 /* ── Cards ────────────────────────────────────────────────── */
 .card {
@@ -180,7 +188,12 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
 /* Full-width panels (console, dashboard) */
 #tab-device.active,
 #tab-console.active {
-  display: flex; flex-direction: column;
+  display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden;
+}
+
+#tab-console.active {
+  height: 0;
+  flex: 1 1 0;
 }
 
 /* ── Forms ────────────────────────────────────────────────── */
@@ -197,6 +210,18 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
 }
 .field-grid .field-row { margin-bottom: 0; }
 .span-2 { grid-column: span 2; }
+
+.conn-entry-row {
+  display: flex; gap: var(--sp-sm); flex-wrap: wrap;
+}
+.conn-entry-field {
+  display: flex; flex-direction: column; gap: 3px;
+  flex: 1 1 160px; min-width: 0;
+}
+.conn-entry-field label {
+  font-size: var(--fs-sm); color: var(--text-secondary);
+}
+.conn-entry-field--name { flex-grow: 2; }
 .playback-toggle-row {
   justify-content: flex-start;
 }
@@ -236,7 +261,6 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
 }
 
 /* Transport form cards use compact label spacing like the Loop/Single Clip toggles. */
-#transportJogCard .field-row,
 #transportShuttleCard .field-row,
 #transportGotoCard .field-row,
 #transportPlayRangeCard .field-row {
@@ -283,14 +307,12 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
 }
 
 /* Fixed label width across transport input cards for uniform, compact spacing. */
-#transportJogCard .field-row label:first-child,
 #transportShuttleCard .field-row label:first-child,
 #transportGotoCard .field-row label:first-child,
 #transportPlayRangeCard .field-row label:first-child {
   flex: 0 0 112px;
 }
 
-#transportJogCard .field-row input,
 #transportShuttleCard .field-row input,
 #transportGotoCard .field-row input,
 #transportGotoCard .field-row select,
@@ -392,6 +414,32 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 
 /* Transport buttons */
 .transport-btns { display: flex; flex-wrap: wrap; gap: var(--sp-xs); margin-bottom: var(--sp-md); }
+
+/* Single-row order: Skip Back, Rewind, Record, Play, Stop, FF, Skip Forward. */
+#transportSkipBackBtn    { order: 1; }
+#transportRewindBtn      { order: 2; }
+#transportRecordBtn      { order: 3; }
+#transportPlayBtn        { order: 4; }
+#transportStopBtn        { order: 5; }
+#transportForwardBtn     { order: 6; }
+#transportSkipForwardBtn { order: 7; }
+.transport-btns-break { order: -1; flex-basis: 100%; width: 0; height: 0; }
+.transport-btns:not(.transport-btns--wrapped) .transport-btns-break { display: none; }
+
+/* Wrapped 2-row order (set via ResizeObserver in app.js): Record/Play/Stop on row 1,
+   Skip Back/Rewind/FF/Skip Forward on row 2. */
+.transport-btns--wrapped #transportRecordBtn      { order: 1; }
+.transport-btns--wrapped #transportPlayBtn        { order: 2; }
+.transport-btns--wrapped #transportStopBtn        { order: 3; }
+.transport-btns--wrapped .transport-btns-break    { order: 4; }
+.transport-btns--wrapped #transportSkipBackBtn    { order: 5; }
+.transport-btns--wrapped #transportRewindBtn      { order: 6; }
+.transport-btns--wrapped #transportForwardBtn     { order: 7; }
+.transport-btns--wrapped #transportSkipForwardBtn { order: 8; }
+
+/* Center each row when the transport buttons wrap onto multiple lines. */
+.transport-btns--wrapped { justify-content: center; }
+
 .tbtn {
   background: var(--bg-hover); border: 1px solid var(--border);
   border-radius: var(--r-sm); color: var(--text-primary);
@@ -533,6 +581,10 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 .sidebar-status-item--clickable { cursor: pointer; }
 .sidebar-status-item .info-label { color: var(--text-secondary); white-space: nowrap; font-size: inherit; }
 .sidebar-dot-label { color: var(--text-secondary); white-space: nowrap; font-size: var(--fs-sm); }
+
+/* Pinned Playback card relocated from the Transport tab (see applyTransportDashboardPin). */
+#sidebarPinnedTransportSlot:not(:empty) { margin-top: var(--sp-sm); }
+#sidebarPinnedTransportSlot .card { padding: var(--sp-sm) var(--sp-md); }
 
 /* ── Timecode display ─────────────────────────────────────── */
 .timecode-display {
@@ -806,9 +858,9 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 /* ── Console ──────────────────────────────────────────────── */
-.console-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.console-wrap { display: flex; flex-direction: column; flex: 1 1 0; height: 0; min-height: 0; overflow: hidden; }
 .console-output {
-  flex: 1; min-height: 300px; max-height: calc(100vh - var(--topbar-h) - 100px);
+  flex: 1 1 auto; min-height: 0; max-height: none;
   overflow-y: auto;
   background: #0a0c0e; border: 1px solid var(--border); border-radius: var(--r-sm);
   padding: var(--sp-sm) var(--sp-md);
@@ -919,9 +971,29 @@ hr.divider {
 }
 @media (max-width: 620px) {
   .layout { flex-direction: column; }
-  .sidebar { width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid var(--border); }
+  .sidebar {
+    width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid var(--border);
+    /* Stacked layout: sidebar must not reserve a full viewport height or stay pinned,
+       otherwise the tabs below it require a long scroll and then slide underneath it. */
+    position: static; height: auto; max-height: none;
+  }
   #sidebarDeviceSection { display: none !important; }
+  .tabs { position: static; z-index: auto; }
   .field-grid { grid-template-columns: 1fr; }
+  .field-row { flex-wrap: wrap; }
+  .field-row label:first-child { flex: 1 1 100%; }
+  .conn-entry-row { flex-direction: column; }
   .playback-toggle-inline { gap: var(--sp-xs) var(--sp-md); }
+  body.pin-dashboard-mobile .sidebar {
+    position: sticky;
+    top: var(--topbar-h);
+    max-height: calc(100vh - var(--topbar-h));
+    overflow-y: auto;
+    z-index: 30;
+  }
+  body.pin-dashboard-mobile .clip-table--resizable th,
+  body.pin-dashboard-mobile .clip-table th {
+    z-index: 0;
+  }
 }
 
