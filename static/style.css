@@ -185,11 +185,11 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
 
 /* ── Forms ────────────────────────────────────────────────── */
 .field-row {
-  display: flex; align-items: center; gap: var(--sp-sm);
+  display: flex; align-items: center; gap: 6px;
   margin-bottom: var(--sp-xs);
 }
 .field-row label:first-child {
-  flex: 0 0 136px; font-size: var(--fs-sm); color: var(--text-secondary);
+  flex: 0 0 112px; font-size: var(--fs-sm); color: var(--text-secondary);
 }
 .field-grid {
   display: grid; grid-template-columns: 1fr 1fr;
@@ -282,12 +282,12 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
   grid-template-columns: 1fr;
 }
 
-/* Fixed label width across all transport input cards for uniform input sizing */
+/* Fixed label width across transport input cards for uniform, compact spacing. */
 #transportJogCard .field-row label:first-child,
 #transportShuttleCard .field-row label:first-child,
 #transportGotoCard .field-row label:first-child,
 #transportPlayRangeCard .field-row label:first-child {
-  flex: 0 0 120px;
+  flex: 0 0 112px;
 }
 
 #transportJogCard .field-row input,
@@ -599,6 +599,8 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ── Clip table ───────────────────────────────────────────── */
 .clip-table-wrap { overflow-x: auto; margin-top: var(--sp-sm); }
+.timeline-clip-table-wrap { overflow-x: hidden; }
+.timeline-clip-table-wrap.is-scrollable { overflow-x: auto; }
 .clip-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .clip-table th {
   background: var(--bg-surface); color: var(--text-secondary);
@@ -741,6 +743,41 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 
 .clip-table--resizable th {
   position: relative;
+}
+
+/* Let the filename column give up space before the protocol/timecode columns. */
+#clipsTable th:nth-child(3),
+#clipsTable td:nth-child(3) {
+  width: 22% !important;
+  min-width: 0;
+}
+
+#clipsTable .clip-name {
+  max-width: none;
+  min-width: 0;
+}
+
+#currentSlotMediaTable th:nth-child(2),
+#currentSlotMediaTable td:nth-child(2) {
+  width: 22% !important;
+  min-width: 0;
+}
+
+#currentSlotMediaTable .clip-name {
+  max-width: none;
+  min-width: 0;
+}
+
+@media (max-width: 800px) {
+  #clipsTable th:nth-child(3),
+  #clipsTable td:nth-child(3) {
+    width: 14% !important;
+  }
+
+  #currentSlotMediaTable th:nth-child(2),
+  #currentSlotMediaTable td:nth-child(2) {
+    width: 14% !important;
+  }
 }
 
 .clip-table--resizable .col-resize-handle {

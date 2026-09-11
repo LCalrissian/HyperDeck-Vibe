@@ -32,6 +32,8 @@
  * { type: "state", state: { … } } messages.
  */
 let deviceState = {};
+let pendingTransportStateOverlay = {};
+let pendingWatchdogPings = 0;
 
 /** Current WebSocket instance (null when disconnected). */
 let socket = null;
@@ -129,9 +131,24 @@ const UI_PREFERENCES_STORAGE_KEY = "hyperdeckVibe.uiPreferences";
 const uiPreferences = {
   showDynamicRangeInTransportInfo: true,
   showTransportJog: true,
+  showTransportCustomRecord: true,
   showTransportShuttle: true,
   showTransportGoto: true,
   showTransportPlayRange: true,
+  showTimelineAddClip: true,
+  showMediaSlotInfo: true,
+  showMediaRecordSpill: true,
+  showMediaAddClip: true,
+  showMediaAddFormat: true,
+  showMediaExternalDrives: true,
+  showMediaFormatDisk: true,
+  showTimelineTab: true,
+  showMediaTab: true,
+  showDeviceTab: true,
+  showNasTab: true,
+  showSlateTab: true,
+  showAdvancedTab: true,
+  showConsoleTab: true,
 };
 
 const SLOT_SELECT_COMMON_VIDEO_FORMATS = [
@@ -288,6 +305,8 @@ function handleServerMessage(message) {
       break;
 
     case "disconnected":
+      pendingTransportStateOverlay = {};
+      pendingWatchdogPings = 0;
       hasTransportStateHydratedForSession = false;
       for (const key of Object.keys(knownSlotStates)) {
         delete knownSlotStates[key];
@@ -331,7 +350,11 @@ function handleServerMessage(message) {
     case "state":
       {
         const previousConnectionKey = `${Boolean(deviceState.is_connected)}|${String(deviceState.host || "").trim()}|${String(deviceState.port || "").trim()}`;
-      deviceState = message.state || {};
+      deviceState = {
+        ...(message.state || {}),
+        ...pendingTransportStateOverlay,
+      };
+      pendingTransportStateOverlay = {};
         const nextConnectionKey = `${Boolean(deviceState.is_connected)}|${String(deviceState.host || "").trim()}|${String(deviceState.port || "").trim()}`;
 
         if (nextConnectionKey !== previousConnectionKey) {
@@ -438,7 +461,11 @@ function handleParsedResponse(code, text, kv) {
   switch (code) {
     // ── 200 ok ─────────────────────────────────────────────────────────
     case 200:
-      showToast("OK", "ok");
+      if (pendingWatchdogPings > 0) {
+        pendingWatchdogPings -= 1;
+      } else {
+        showToast("OK", "ok");
+      }
       break;
 
     // ── 201 help ───────────────────────────────────────────────────────
@@ -466,10 +493,14 @@ function handleParsedResponse(code, text, kv) {
       break;
 
     case 519:
-      lastTimelineClipsKv = kv;
-      renderClipsTable(kv);
-      // 519 snapshot responses (rebuild, remove, etc.) lack proper durations.
-      // Automatically follow up with clips get to get accurate clip info.
+      if (String(kv["update type"] || "").trim().toLowerCase() === "add") {
+        lastTimelineClipsKv = mergeTimelineClipAdd(lastTimelineClipsKv, kv);
+        renderClipsTable(lastTimelineClipsKv);
+      } else {
+        lastTimelineClipsKv = kv;
+        renderClipsTable(kv);
+      }
+      // Snapshot responses can omit accurate durations, so refresh them once.
       if (String(kv["update type"] || "").trim().toLowerCase() === "snapshot") {
         applyClipsGet();
       }
@@ -486,6 +517,8 @@ function handleParsedResponse(code, text, kv) {
     case 208:
     case 508:
       hasTransportStateHydratedForSession = true;
+      mergeTransportInfoIntoLocalState(kv);
+      applyTransportInfoResponseToUI(kv);
 
       const responseStatus = String(kv.status || deviceState.transport_status || "")
         .trim()
@@ -799,7 +832,11 @@ function applyStateToUI(state) {
   // Dashboard transport
   setText("dashSpeed",      formatSpeed(state.transport_speed));
   setText("dashClipId",     state.transport_clip_id         || "—");
-  updateTransportClipNameIndicator(state);
+  if (Object.prototype.hasOwnProperty.call(state, "transport_clip_name")) {
+    setText("dashClipName", state.transport_clip_name || "—");
+  } else {
+    updateTransportClipNameIndicator(state);
+  }
   setText("dashSlotId",     formatSlot(state));
   const mediaSlotId = normalizeDisplayNone(state.transport_slot_id);
   const mediaSlotLabel = isDisplayNoneToken(mediaSlotId)
@@ -2171,12 +2208,9 @@ function applyPreview() {
 // SECTION: Clip commands
 // ============================================================
 
-/** Build and send a "clips get" command with optional response version. */
+/** Build and send the fixed protocol-version-2 timeline query. */
 function applyClipsGet() {
-  const opts = {};
-  const version = document.getElementById("clipsGetVersion")?.value || "";
-  if (version) opts.version = version;
-  sendCmd(buildInlineCommand("clips get", opts));
+  sendCmd("clips get: version: 2");
 }
 
 /** Send "clips rebuild". The 519 snapshot response will automatically trigger a clips get. */
@@ -2213,12 +2247,37 @@ function applyClipAddFromIds(ids) {
 
   if (!name) { showToast("Clip name is required", "error"); return; }
 
-  const opts = { name };
-  if (beforeId)        opts["clip id"] = beforeId;
-  if (inTc && outTc)   { opts.in = inTc; opts.out = outTc; }
-  else if (frameIn && frameOut) { opts["frame in"] = frameIn; opts["frame out"] = frameOut; }
+  // HyperDeck requires trim parameters before the final name parameter.
+  // Keep the documented command forms explicit instead of relying on object
+  // insertion order in the generic command builder.
+  if (inTc && outTc) {
+    const insertPrefix = beforeId ? ` clip id: ${beforeId}` : "";
+    sendClipAddCommand(`clips add:${insertPrefix} in: ${inTc} out: ${outTc} name: ${name}`, Boolean(beforeId));
+    return;
+  }
 
-  sendCmd(buildInlineCommand("clips add", opts));
+  if (frameIn && frameOut) {
+    const insertPrefix = beforeId ? ` clip id: ${beforeId}` : "";
+    sendClipAddCommand(`clips add:${insertPrefix} frame in: ${frameIn} frame out: ${frameOut} name: ${name}`, Boolean(beforeId));
+    return;
+  }
+
+  if (beforeId) {
+    sendClipAddCommand(`clips add: clip id: ${beforeId} name: ${name}`, true);
+    return;
+  }
+
+  sendClipAddCommand(`clips add: name: ${name}`);
+}
+
+/** Send a clip-add command; the deck's 519 add response updates the timeline. */
+function sendClipAddCommand(command, refreshTimeline = false) {
+  sendCmd(command);
+  if (refreshTimeline) {
+    // Inserting before a clip shifts the IDs and timecodes of later rows, so a
+    // partial 519 add update cannot safely represent the whole new timeline.
+    setTimeout(() => applyClipsGet(), 300);
+  }
 }
 
 function applyClipAdd() {
@@ -2328,6 +2387,17 @@ function parseTimelineClipEntry(data, isV2) {
   };
 }
 
+/** Merge a 519 add payload into the last complete timeline snapshot. */
+function mergeTimelineClipAdd(previous, update) {
+  const merged = { ...(previous || {}) };
+  for (const [key, value] of Object.entries(update || {})) {
+    if (/^\d+$/.test(key) || key === "clip count") {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
 function parseClipId(value) {
   const parsed = Number.parseInt(String(value || "").trim(), 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
@@ -2350,6 +2420,60 @@ function updateTransportClipNameIndicator(state = deviceState) {
 
   const clipName = timelineClipNameById.get(clipId) || slotMediaClipNameById.get(clipId) || "";
   setText("dashClipName", clipName || "—");
+}
+
+/** Apply the fields that a 208/508 transport response updates immediately. */
+function applyTransportInfoResponseToUI(kv) {
+  if (Object.prototype.hasOwnProperty.call(kv, "clip id")) {
+    setText("dashClipId", kv["clip id"] || "—");
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "timeline")) {
+    setText("dashTimeline", kv.timeline || "—");
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "video format")) {
+    setText("tsFormat", kv["video format"] || "—");
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "speed")) {
+    setText("dashSpeed", formatSpeed(kv.speed));
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "status")) {
+    setStatusBadge("tsStatus", kv.status, kv.speed);
+    setStatusBadge("dashStatus", kv.status, kv.speed);
+  }
+}
+
+/** Merge a transport response before an older queued state snapshot can repaint the UI. */
+function mergeTransportInfoIntoLocalState(kv) {
+  const overlay = {};
+  if (Object.prototype.hasOwnProperty.call(kv, "clip id")) {
+    deviceState.transport_clip_id = kv["clip id"];
+    overlay.transport_clip_id = kv["clip id"];
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "timeline")) {
+    deviceState.transport_timeline = kv.timeline;
+    overlay.transport_timeline = kv.timeline;
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "status")) {
+    deviceState.transport_status = kv.status;
+    overlay.transport_status = kv.status;
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "speed")) {
+    deviceState.transport_speed = kv.speed;
+    overlay.transport_speed = kv.speed;
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "video format")) {
+    deviceState.transport_video_format = kv["video format"];
+    overlay.transport_video_format = kv["video format"];
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "timecode")) {
+    deviceState.transport_timecode = kv.timecode;
+    overlay.transport_timecode = kv.timecode;
+  }
+  if (Object.prototype.hasOwnProperty.call(kv, "display timecode")) {
+    deviceState.transport_display_timecode = kv["display timecode"];
+    overlay.transport_display_timecode = kv["display timecode"];
+  }
+  pendingTransportStateOverlay = { ...pendingTransportStateOverlay, ...overlay };
 }
 
 function normalizeTimelineClipInfoValue(value) {
@@ -2576,8 +2700,7 @@ function renderClipsTable(kv) {
 
   // Some decks return 519 rebuild snapshots in v2-style regardless of the selected dropdown.
   // Trust the payload shape first; only fall back to the dropdown when there are no rows to inspect.
-  const selectedVersion = document.getElementById("clipsGetVersion")?.value || "";
-  const requestedV2 = selectedVersion === "2" || selectedVersion === "3";
+  const requestedV2 = true;
   const payloadLooksV2 = clipEntries.some(([, data]) => looksLikeV2ClipEntry(data));
   const isV2 = payloadLooksV2 || (clipEntries.length === 0 && requestedV2);
   const table = document.getElementById("clipsTable");
@@ -2637,6 +2760,8 @@ function renderClipsTable(kv) {
     </tr>`;
   }).join("");
 
+  updateTimelineClipTableOverflow();
+
   // Single-click a timeline row to cue that clip.
   for (const row of tbody.querySelectorAll("tr")) {
     const idCell = row.querySelector("td:nth-child(2)");
@@ -2648,6 +2773,22 @@ function renderClipsTable(kv) {
       if (event.target && event.target.closest("button")) return;
       gotoClip(clipId);
     });
+  }
+}
+
+/** Show the Timeline table scrollbar only when its rendered content overflows. */
+function updateTimelineClipTableOverflow() {
+  const wrapper = document.querySelector(".timeline-clip-table-wrap");
+  if (!wrapper) return;
+  wrapper.classList.toggle("is-scrollable", wrapper.scrollWidth > wrapper.clientWidth + 4);
+}
+
+window.addEventListener("resize", updateTimelineClipTableOverflow);
+if (typeof ResizeObserver === "function") {
+  const timelineClipTableResizeObserver = new ResizeObserver(updateTimelineClipTableOverflow);
+  const timelineClipTableWrapper = document.querySelector(".timeline-clip-table-wrap");
+  if (timelineClipTableWrapper) {
+    timelineClipTableResizeObserver.observe(timelineClipTableWrapper);
   }
 }
 
@@ -2968,12 +3109,6 @@ function applyRemote() {
   sendCmd(`remote: enable: ${enabled} override: ${override}`);
 }
 
-/** Send a "connection protocol: response version" command. */
-function applyConnectionProtocol() {
-  const version = getValue("connProtoVersion");
-  sendCmd(`connection protocol: response version: ${version}`);
-}
-
 /**
  * Build and send the multiline "authenticate" command.
  * The spec marks this as multiline-only (parameter block, not inline).
@@ -3231,7 +3366,8 @@ function startWatchdog() {
   stopWatchdog();
   watchdogIntervalId = setInterval(() => {
     if (isSocketOpen()) {
-      sendCmd("ping");
+      pendingWatchdogPings += 1;
+      sendCmd("ping", { quiet: true });
     }
   }, WATCHDOG_INTERVAL_MS);
 }
@@ -3401,6 +3537,10 @@ function activateTab(tabName) {
     panel.classList.toggle("active", panel.id === `tab-${tabName}`);
   });
 
+  if (tabName === "clips") {
+    requestAnimationFrame(updateTimelineClipTableOverflow);
+  }
+
   if (tabName === "clips" && deviceState.is_connected === true) {
     if (lastTimelineClipsKv) {
       renderClipsTable(lastTimelineClipsKv);
@@ -3556,6 +3696,12 @@ function setValue(id, value) {
   if (el) el.value = value;
 }
 
+/** Apply a persisted visibility preference to an element by ID. */
+function setVisibility(id, visible) {
+  const element = document.getElementById(id);
+  if (element) element.hidden = visible === false;
+}
+
 /** Get whether a checkbox is checked. */
 function getChecked(id) {
   const el = document.getElementById(id);
@@ -3659,6 +3805,9 @@ function loadUiPreferences() {
     if (typeof parsed.showTransportJog === "boolean") {
       uiPreferences.showTransportJog = parsed.showTransportJog;
     }
+    if (typeof parsed.showTransportCustomRecord === "boolean") {
+      uiPreferences.showTransportCustomRecord = parsed.showTransportCustomRecord;
+    }
     if (typeof parsed.showTransportShuttle === "boolean") {
       uiPreferences.showTransportShuttle = parsed.showTransportShuttle;
     }
@@ -3667,6 +3816,26 @@ function loadUiPreferences() {
     }
     if (typeof parsed.showTransportPlayRange === "boolean") {
       uiPreferences.showTransportPlayRange = parsed.showTransportPlayRange;
+    }
+    for (const key of [
+      "showTimelineAddClip",
+      "showMediaSlotInfo",
+      "showMediaRecordSpill",
+      "showMediaAddClip",
+      "showMediaAddFormat",
+      "showMediaExternalDrives",
+      "showMediaFormatDisk",
+      "showTimelineTab",
+      "showMediaTab",
+      "showDeviceTab",
+      "showNasTab",
+      "showSlateTab",
+      "showAdvancedTab",
+      "showConsoleTab",
+    ]) {
+      if (typeof parsed[key] === "boolean") {
+        uiPreferences[key] = parsed[key];
+      }
     }
   } catch {
     // Ignore malformed local storage content and use defaults.
@@ -3684,21 +3853,42 @@ function saveUiPreferences() {
 function applyUiPreferencesToUI() {
   const showDynamicRange = uiPreferences.showDynamicRangeInTransportInfo !== false;
   const showTransportJog = uiPreferences.showTransportJog !== false;
+  const showTransportCustomRecord = uiPreferences.showTransportCustomRecord !== false;
   const showTransportShuttle = uiPreferences.showTransportShuttle !== false;
   const showTransportGoto = uiPreferences.showTransportGoto !== false;
   const showTransportPlayRange = uiPreferences.showTransportPlayRange !== false;
 
   const dynRangeCell = document.getElementById("dashDynRangeCell");
   const jogCard = document.getElementById("transportJogCard");
+  const customRecordCard = document.getElementById("transportCustomRecordCard");
   const shuttleCard = document.getElementById("transportShuttleCard");
   const gotoCard = document.getElementById("transportGotoCard");
   const playRangeCard = document.getElementById("transportPlayRangeCard");
+  setVisibility("timelineAddClipCard", uiPreferences.showTimelineAddClip);
+  setVisibility("currentSlotInfoSection", uiPreferences.showMediaSlotInfo);
+  setVisibility("mediaRecordSpillCard", uiPreferences.showMediaRecordSpill);
+  setVisibility("mediaAddClipCard", uiPreferences.showMediaAddClip);
+  setVisibility("mediaAddByFormatCard", uiPreferences.showMediaAddFormat);
+  setVisibility("mediaExternalDrivesCard", uiPreferences.showMediaExternalDrives);
+  setVisibility("mediaFormatDiskCard", uiPreferences.showMediaFormatDisk);
+
+  setCheckbox("cfgShowTimelineAddClip", uiPreferences.showTimelineAddClip);
+  setCheckbox("cfgShowMediaSlotInfo", uiPreferences.showMediaSlotInfo);
+  setCheckbox("cfgShowMediaRecordSpill", uiPreferences.showMediaRecordSpill);
+  setCheckbox("cfgShowMediaAddClip", uiPreferences.showMediaAddClip);
+  setCheckbox("cfgShowMediaAddFormat", uiPreferences.showMediaAddFormat);
+  setCheckbox("cfgShowMediaExternalDrives", uiPreferences.showMediaExternalDrives);
+  setCheckbox("cfgShowMediaFormatDisk", uiPreferences.showMediaFormatDisk);
+  applyTabVisibilityPreferences();
 
   if (dynRangeCell) {
     dynRangeCell.hidden = !showDynamicRange;
   }
   if (jogCard) {
     jogCard.hidden = !showTransportJog;
+  }
+  if (customRecordCard) {
+    customRecordCard.hidden = !showTransportCustomRecord;
   }
   if (shuttleCard) {
     shuttleCard.hidden = !showTransportShuttle;
@@ -3712,6 +3902,7 @@ function applyUiPreferencesToUI() {
 
   setCheckbox("cfgShowDynRange", showDynamicRange);
   setCheckbox("cfgShowTransportJog", showTransportJog);
+  setCheckbox("cfgShowTransportCustomRecord", showTransportCustomRecord);
   setCheckbox("cfgShowTransportShuttle", showTransportShuttle);
   setCheckbox("cfgShowTransportGoto", showTransportGoto);
   setCheckbox("cfgShowTransportPlayRange", showTransportPlayRange);
@@ -3725,11 +3916,71 @@ function onCfgShowDynRangeToggleChange() {
 
 function onCfgShowTransportSectionsToggleChange() {
   uiPreferences.showTransportJog = getChecked("cfgShowTransportJog");
+  uiPreferences.showTransportCustomRecord = getChecked("cfgShowTransportCustomRecord");
   uiPreferences.showTransportShuttle = getChecked("cfgShowTransportShuttle");
   uiPreferences.showTransportGoto = getChecked("cfgShowTransportGoto");
   uiPreferences.showTransportPlayRange = getChecked("cfgShowTransportPlayRange");
   saveUiPreferences();
   applyUiPreferencesToUI();
+}
+
+/** Apply and save Timeline/Media tab visibility preferences. */
+function onCfgShowTimelineMediaToggleChange() {
+  uiPreferences.showTimelineAddClip = getChecked("cfgShowTimelineAddClip");
+  uiPreferences.showMediaSlotInfo = getChecked("cfgShowMediaSlotInfo");
+  uiPreferences.showMediaRecordSpill = getChecked("cfgShowMediaRecordSpill");
+  uiPreferences.showMediaAddClip = getChecked("cfgShowMediaAddClip");
+  uiPreferences.showMediaAddFormat = getChecked("cfgShowMediaAddFormat");
+  uiPreferences.showMediaExternalDrives = getChecked("cfgShowMediaExternalDrives");
+  uiPreferences.showMediaFormatDisk = getChecked("cfgShowMediaFormatDisk");
+  saveUiPreferences();
+  applyUiPreferencesToUI();
+}
+
+/** Apply and save visibility preferences for non-critical top-level tabs. */
+function onCfgShowTabVisibilityChange() {
+  uiPreferences.showTimelineTab = getChecked("cfgShowTimelineTab");
+  uiPreferences.showMediaTab = getChecked("cfgShowMediaTab");
+  uiPreferences.showDeviceTab = getChecked("cfgShowDeviceTab");
+  uiPreferences.showNasTab = getChecked("cfgShowNasTab");
+  uiPreferences.showSlateTab = getChecked("cfgShowSlateTab");
+  uiPreferences.showAdvancedTab = getChecked("cfgShowAdvancedTab");
+  uiPreferences.showConsoleTab = getChecked("cfgShowConsoleTab");
+  saveUiPreferences();
+  applyTabVisibilityPreferences();
+}
+
+/** Hide or show top-level tabs while keeping Transport, Preferences, and Connections available. */
+function applyTabVisibilityPreferences() {
+  const visibility = {
+    clips: uiPreferences.showTimelineTab,
+    slots: uiPreferences.showMediaTab,
+    device: uiPreferences.showDeviceTab,
+    nas: uiPreferences.showNasTab,
+    slate: uiPreferences.showSlateTab,
+    advanced: uiPreferences.showAdvancedTab,
+    console: uiPreferences.showConsoleTab,
+  };
+
+  for (const [tabName, visible] of Object.entries(visibility)) {
+    const button = document.querySelector(`.tab[data-tab="${tabName}"]`);
+    const panel = document.getElementById(`tab-${tabName}`);
+    if (button) button.hidden = visible === false;
+    if (panel && visible === false && panel.classList.contains("active")) {
+      activateTab("transport");
+    }
+  }
+  for (const [id, key] of [
+    ["cfgShowTimelineTab", "showTimelineTab"],
+    ["cfgShowMediaTab", "showMediaTab"],
+    ["cfgShowDeviceTab", "showDeviceTab"],
+    ["cfgShowNasTab", "showNasTab"],
+    ["cfgShowSlateTab", "showSlateTab"],
+    ["cfgShowAdvancedTab", "showAdvancedTab"],
+    ["cfgShowConsoleTab", "showConsoleTab"],
+  ]) {
+    setCheckbox(id, uiPreferences[key]);
+  }
 }
 
 function escapeHtml(value) {
@@ -3795,7 +4046,6 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "applyClipsGet",
   "applyClipsRebuild",
   "applyConfiguration",
-  "applyConnectionProtocol",
   "applyDiskList",
   "applyDynamicRange",
   "applyExtDriveSelect",
@@ -3989,6 +4239,12 @@ function attachDeclarativeEventHandlers() {
 /** Wire up all tabs, attach Enter key to connection form, and auto-open WebSocket. */
 function initUI() {
   loadUiPreferences();
+  moveDeviceConfigurationCard();
+  combineConfigurationCards();
+  attachConfigurationAutoApply();
+  movePlayOnStartupCard();
+  moveDeviceUtilityCards();
+  movePreviewModeCard();
   // Register delegated handler system before user interactions begin.
   attachDeclarativeEventHandlers();
 
@@ -4012,9 +4268,24 @@ function initUI() {
   document.getElementById("playSingleClip")?.addEventListener("change", onPlaySingleClipToggleChange);
   document.getElementById("cfgShowDynRange")?.addEventListener("change", onCfgShowDynRangeToggleChange);
   document.getElementById("cfgShowTransportJog")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("cfgShowTransportCustomRecord")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
   document.getElementById("cfgShowTransportShuttle")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
   document.getElementById("cfgShowTransportGoto")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
   document.getElementById("cfgShowTransportPlayRange")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
+  document.getElementById("cfgShowTimelineAddClip")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
+  document.getElementById("cfgShowMediaSlotInfo")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
+  document.getElementById("cfgShowMediaRecordSpill")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
+  document.getElementById("cfgShowMediaAddClip")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
+  document.getElementById("cfgShowMediaAddFormat")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
+  document.getElementById("cfgShowMediaExternalDrives")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
+  document.getElementById("cfgShowMediaFormatDisk")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
+  document.getElementById("cfgShowTimelineTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
+  document.getElementById("cfgShowMediaTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
+  document.getElementById("cfgShowDeviceTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
+  document.getElementById("cfgShowNasTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
+  document.getElementById("cfgShowSlateTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
+  document.getElementById("cfgShowAdvancedTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
+  document.getElementById("cfgShowConsoleTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
   document.getElementById("tsPlayRange")?.addEventListener("click", jumpToPlayRangeSection);
   document.getElementById("playbackPlayRangeSetBadge")?.addEventListener("click", jumpToPlayRangeSection);
 
@@ -4038,6 +4309,73 @@ function initUI() {
   loadConnectionProfiles();
 
   consoleLog("HyperDeck Vibe ready. Enter the device IP address and click Connect.", "cl--connect");
+}
+
+/** Move the full editable Device Configuration card into the Device tab. */
+function moveDeviceConfigurationCard() {
+  const card = document.getElementById("deviceConfigurationCard");
+  const devicePanel = document.getElementById("tab-device");
+  const remoteCard = devicePanel?.querySelector("#dashRemoteToggleBtn")?.closest(".card");
+  if (card && devicePanel && remoteCard) {
+    devicePanel.insertBefore(card, remoteCard);
+  }
+}
+
+/** Fold the read-only Active Configuration summary into the editable card. */
+function combineConfigurationCards() {
+  const summary = document.getElementById("activeConfigurationCard");
+  const configuration = document.getElementById("deviceConfigurationCard");
+  if (!summary || !configuration) return;
+
+  const firstSection = configuration.querySelector(".section-heading");
+  const summaryNodes = Array.from(summary.childNodes);
+  if (firstSection) {
+    firstSection.before(...summaryNodes);
+  } else {
+    configuration.append(...summaryNodes);
+  }
+  summary.remove();
+}
+
+/** Auto-apply editable Device Configuration fields when they change. */
+function attachConfigurationAutoApply() {
+  const card = document.getElementById("deviceConfigurationCard");
+  if (!card) return;
+  card.querySelectorAll("select, input").forEach((control) => {
+    control.addEventListener("change", () => applyConfiguration());
+  });
+}
+
+/** Move the Play on Startup controls into the Device tab. */
+function movePlayOnStartupCard() {
+  const card = document.getElementById("playOnStartupCard");
+  const devicePanel = document.getElementById("tab-device");
+  const remoteCard = devicePanel?.querySelector("#dashRemoteToggleBtn")?.closest(".card");
+  if (card && devicePanel && remoteCard) {
+    devicePanel.insertBefore(card, remoteCard);
+  }
+}
+
+/** Move Device-tab utility cards out of the Configuration tab. */
+function moveDeviceUtilityCards() {
+  const devicePanel = document.getElementById("tab-device");
+  const remoteCard = devicePanel?.querySelector("#dashRemoteToggleBtn")?.closest(".card");
+  if (!devicePanel || !remoteCard) return;
+
+  for (const id of ["playOptionCard", "authenticateCard", "dynamicRangeCard"]) {
+    const card = document.getElementById(id);
+    if (card) devicePanel.insertBefore(card, remoteCard);
+  }
+}
+
+/** Move Preview Mode into its own Device-tab card. */
+function movePreviewModeCard() {
+  const card = document.getElementById("previewModeCard");
+  const devicePanel = document.getElementById("tab-device");
+  const remoteCard = devicePanel?.querySelector("#dashRemoteToggleBtn")?.closest(".card");
+  if (card && devicePanel && remoteCard) {
+    devicePanel.insertBefore(card, remoteCard);
+  }
 }
 
 // Bootstrap when DOM is ready

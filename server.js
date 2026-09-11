@@ -48,6 +48,9 @@ const REQUIRED_NOTIFY_KEYS = [
   "remote",
 ];
 
+let pendingCurrentClipInfo = false;
+let awaitingClipIdAfterClipInfo = false;
+
 const DEFAULT_APP_CONFIG = {
   server: {
     bind_host: APP_DEFAULT_BIND_HOST,
@@ -250,6 +253,9 @@ class DeviceState {
     this.transport_slot_name = "";
     this.transport_device_name = "";
     this.transport_clip_id = "";
+    this.transport_clip_name = "";
+    this.transport_clip_id_predicted = false;
+    this.last_known_clip_id = "";
     this.transport_single_clip = null;
     this.transport_display_timecode = "";
     this.transport_timecode = "";
@@ -577,6 +583,9 @@ class HyperDeckController {
         pendingPlayrangeQuery = false;
         cancelPendingPlayrangeClear();
       }
+      if (/^clip info$/i.test(command)) {
+        pendingCurrentClipInfo = true;
+      }
       await this.device.send(command);
       this.broadcaster.broadcast({ type: "sent", line: command });
     } catch (error) {
@@ -597,6 +606,9 @@ const controller = new HyperDeckController({
 let pendingPlayrangeQuery = false;
 let pendingPlayrangeClearTimer = null;
 let pendingPlayrangeClearCommand = false;
+let recordingClipInfoPollTimer = null;
+let recordingClipInfoPollActive = false;
+let recordingClipInfoPollAttempts = 0;
 
 let responseAccumulator = [];
 let inMultilineResponse = false;
@@ -777,6 +789,37 @@ function clearPendingPlayrangeFlags() {
   cancelPendingPlayrangeClear();
 }
 
+function stopRecordingClipInfoPoll() {
+  recordingClipInfoPollActive = false;
+  recordingClipInfoPollAttempts = 0;
+  if (recordingClipInfoPollTimer !== null) {
+    clearTimeout(recordingClipInfoPollTimer);
+    recordingClipInfoPollTimer = null;
+  }
+}
+
+function scheduleRecordingClipInfoPoll(delayMs = 350) {
+  if (!recordingClipInfoPollActive || recordingClipInfoPollAttempts >= 12) {
+    return;
+  }
+  if (recordingClipInfoPollTimer !== null) {
+    clearTimeout(recordingClipInfoPollTimer);
+  }
+  recordingClipInfoPollTimer = setTimeout(async () => {
+    recordingClipInfoPollTimer = null;
+    if (!recordingClipInfoPollActive || !device.connected) {
+      return;
+    }
+    recordingClipInfoPollAttempts += 1;
+    pendingCurrentClipInfo = true;
+    try {
+      await device.send("clip info");
+    } catch (error) {
+      console.warn("Recording clip info query failed:", error.message);
+    }
+  }, delayMs);
+}
+
 function schedulePendingPlayrangeClear() {
   cancelPendingPlayrangeClear();
   pendingPlayrangeClearTimer = setTimeout(() => {
@@ -835,6 +878,21 @@ function isNotifyEnabled(kv, key) {
   return String(kv[key] || "").trim().toLowerCase() === "true";
 }
 
+function updateLastKnownClipId(kv) {
+  const ids = Object.keys(kv || {})
+    .filter((key) => /^\d+$/.test(key))
+    .map((key) => Number(key))
+    .filter((id) => Number.isInteger(id));
+  if (ids.length === 0) {
+    return;
+  }
+  const highestId = Math.max(...ids);
+  const currentKnownId = Number(state.last_known_clip_id);
+  if (!Number.isInteger(currentKnownId) || highestId > currentKnownId) {
+    state.last_known_clip_id = String(highestId);
+  }
+}
+
 async function enforceRequiredNotifySettings(kv) {
   if (!device.connected) {
     return;
@@ -858,6 +916,11 @@ async function enforceRequiredNotifySettings(kv) {
 async function handleCompleteResponse(code, text, kv) {
   let stateChanged = false;
 
+  if (code === 107 && recordingClipInfoPollActive) {
+    pendingCurrentClipInfo = false;
+    scheduleRecordingClipInfoPoll(750);
+  }
+
   if (code === 500) {
     state.protocol_version = kv["protocol version"] || state.protocol_version;
     state.model = kv["model"] || state.model;
@@ -873,7 +936,17 @@ async function handleCompleteResponse(code, text, kv) {
       state.slot_count = maybeSlotCount;
     }
     stateChanged = true;
-  } else if (code === 202 || code === 502 || code === 206 || code === 520) {
+  } else if (code === 228 && pendingCurrentClipInfo) {
+    const filePath = normalizeProtocolNone(kv["file path"] || kv.name);
+    if (filePath) {
+      state.transport_clip_name = filePath;
+      stateChanged = true;
+      stopRecordingClipInfoPoll();
+    }
+    pendingCurrentClipInfo = false;
+    awaitingClipIdAfterClipInfo = true;
+  } else if (code === 205 || code === 202 || code === 502 || code === 206 || code === 519 || code === 520) {
+    updateLastKnownClipId(kv);
     // Active slot ownership is transport-driven (208/508). For slot/disk responses,
     // only apply slot metadata when payload slot id matches current active slot.
     const payloadSlotRaw = kv["slot id"] !== undefined ? kv["slot id"] : kv["active slot"];
@@ -892,6 +965,8 @@ async function handleCompleteResponse(code, text, kv) {
       stateChanged = true;
     }
   } else if (code === 208 || code === 508) {
+    const previousClipId = state.transport_clip_id;
+    const previousStatus = state.transport_status;
     const activeSlotRaw = kv["active slot"] !== undefined ? kv["active slot"] : kv["slot id"];
     if (activeSlotRaw !== undefined) {
       const normalizedSlot = normalizeProtocolSlotId(activeSlotRaw);
@@ -908,7 +983,21 @@ async function handleCompleteResponse(code, text, kv) {
       const nextDevice = kv["device name"] !== undefined ? kv["device name"] : kv["device"];
       state.transport_device_name = normalizeProtocolNone(nextDevice);
     }
-    state.transport_clip_id = kv["clip id"] || state.transport_clip_id;
+    const isRecording = String(kv.status || state.transport_status).trim().toLowerCase() === "record";
+    if (kv["clip id"] !== undefined && !(isRecording && state.transport_clip_id_predicted)) {
+      state.transport_clip_id = kv["clip id"];
+      state.transport_clip_id_predicted = false;
+      const observedClipId = Number(kv["clip id"]);
+      if (Number.isInteger(observedClipId)) {
+        const knownId = Number(state.last_known_clip_id);
+        if (!Number.isInteger(knownId) || observedClipId > knownId) {
+          state.last_known_clip_id = String(observedClipId);
+        }
+      }
+    }
+    if (code === 208 && awaitingClipIdAfterClipInfo && kv["clip id"] !== undefined) {
+      awaitingClipIdAfterClipInfo = false;
+    }
     state.transport_display_timecode = kv["display timecode"] || state.transport_display_timecode;
     state.transport_timecode = kv["timecode"] || state.transport_timecode;
     state.transport_video_format = kv["video format"] || state.transport_video_format;
@@ -937,6 +1026,30 @@ async function handleCompleteResponse(code, text, kv) {
       );
     }
     stateChanged = true;
+    const nextTransportStatus = state.transport_status;
+    if (nextTransportStatus === "record" && previousStatus !== "record") {
+      const lastKnownId = Number(state.last_known_clip_id);
+      if (Number.isInteger(lastKnownId)) {
+        state.transport_clip_id = String(lastKnownId + 1);
+        state.transport_clip_id_predicted = true;
+        stateChanged = true;
+      }
+    }
+    const clipSelectionChanged = kv["clip id"] !== undefined && kv["clip id"] !== previousClipId;
+    const transportStartedPlaying = nextTransportStatus === "play" && previousStatus !== "play";
+    if (code === 508 && nextTransportStatus === "record" && device.connected) {
+      recordingClipInfoPollActive = true;
+      recordingClipInfoPollAttempts = 0;
+      scheduleRecordingClipInfoPoll(350);
+    }
+    if (code === 508 && (clipSelectionChanged || transportStartedPlaying) && device.connected) {
+      pendingCurrentClipInfo = true;
+      try {
+        await device.send("clip info");
+      } catch (error) {
+        console.warn("Failed to query current clip info after transport change:", error.message);
+      }
+    }
   } else if (code === 210 || code === 510) {
     state.remote_enabled = String(kv["enabled"] || "").toLowerCase() === "true";
     state.remote_override = String(kv["override"] || "").toLowerCase() === "true";
@@ -1044,6 +1157,9 @@ async function onHyperDeckLine(line) {
 
 async function onHyperDeckDisconnect() {
   clearPendingPlayrangeFlags();
+  stopRecordingClipInfoPoll();
+  pendingCurrentClipInfo = false;
+  awaitingClipIdAfterClipInfo = false;
   state.reset();
   broadcaster.broadcast({ type: "disconnected" });
   broadcaster.broadcast({ type: "state", state: state.toJSON() });

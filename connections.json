@@ -1,0 +1,22 @@
+{
+  "server": {
+    "bind_host": "0.0.0.0",
+    "port": 8080
+  },
+  "connections": [
+    {
+      "id": "48456dca-b5c5-4abb-9c3a-44dc117d4e21",
+      "name": "VCR 5",
+      "host": "10.128.230.167",
+      "port": 9993,
+      "model": "HyperDeck Studio HD Plus"
+    },
+    {
+      "id": "8c1b6615-e0dc-4404-9851-9f02d680f624",
+      "name": "Desk HyperDeck",
+      "host": "10.218.8.169",
+      "port": 9993,
+      "model": "HyperDeck Studio HD Plus"
+    }
+  ]
+}

@@ -63,13 +63,13 @@
     <button class="tab active" data-tab="transport">Transport</button>
     <button class="tab" data-tab="clips">Timeline</button>
     <button class="tab" data-tab="slots">Media</button>
-    <button class="tab" data-tab="config">Configuration</button>
-    <button class="tab" data-tab="slate">Slate</button>
-    <button class="tab" data-tab="nas">NAS</button>
     <button class="tab" data-tab="device">Device</button>
-    <button class="tab" id="connectionsTabBtn" data-tab="connections">Connections</button>
+    <button class="tab" data-tab="nas">NAS</button>
+    <button class="tab" data-tab="slate">Slate</button>
+    <button class="tab" data-tab="config">Preferences</button>
     <button class="tab" data-tab="advanced">Advanced</button>
     <button class="tab" data-tab="console">Console</button>
+    <button class="tab" id="connectionsTabBtn" data-tab="connections">Connections</button>
   </nav>
 
   <!-- ═══════════════════════════════════════════════════════
@@ -94,7 +94,7 @@
     </div>
 
     <!-- Configuration summary -->
-    <div class="card">
+    <div class="card" id="activeConfigurationCard">
       <h2 class="card__title">Active Configuration</h2>
       <div class="dash-grid">
         <div class="dash-cell"><div class="dash-cell__label">Video Input</div>
@@ -358,7 +358,7 @@
     </div>
 
     <!-- Record -->
-    <div class="card">
+    <div class="card" id="transportCustomRecordCard">
       <h2 class="card__title">Record with Custom Clip Name</h2>
       <p class="hint">Remote must be enabled. An optional clip name can be set; the deck appends a number automatically.</p>
       <div class="field-row">
@@ -369,21 +369,6 @@
         <button class="btn btn--danger btn--primary" data-action="applyRecord()">⏺ Record</button>
         <button class="btn btn--sm" data-action="sendCmd('stop')">⏹ Stop</button>
       </div>
-    </div>
-
-    <!-- Record Spill -->
-    <div class="card">
-      <h2 class="card__title">Record Spill</h2>
-      <p class="hint">Continue recording to a different slot when the current slot becomes full.</p>
-      <div class="field-row">
-        <label for="spillSlotId">Slot ID</label>
-        <input id="spillSlotId" type="number" min="1" placeholder="optional" />
-      </div>
-      <div class="btn-row">
-        <button class="btn btn--sm" data-action="applyRecordSpill()">Spill to Slot</button>
-        <button class="btn btn--sm" data-action="applySpillOrderQuery()">↻ Query Spill</button>
-      </div>
-      <div id="spillOrderResult" class="result-box" hidden></div>
     </div>
 
   </div><!-- /tab-transport -->
@@ -407,7 +392,7 @@
       <p class="hint">Click a timeline clip row to cue that clip.</p>
       <button class="btn btn--primary btn--sm" data-action="applyClipsGet()">↻ Refresh Timeline Info</button>
 
-      <div class="clip-table-wrap">
+      <div class="clip-table-wrap timeline-clip-table-wrap">
         <table class="clip-table clip-table--resizable" id="clipsTable">
           <thead>
             <tr>
@@ -424,7 +409,7 @@
     </div>
 
     <!-- Add Clip -->
-    <div class="card">
+    <div class="card" id="timelineAddClipCard">
       <h2 class="card__title">Manually Add Clip to Timeline</h2>
       <p class="hint">Add a clip from the disk to the current timeline. Specify trim points using timecode or frame numbers (mutually exclusive).</p>
       <div class="field-grid">
@@ -508,8 +493,23 @@
       </div>
     </div>
 
+    <!-- Record Spill -->
+    <div class="card" id="mediaRecordSpillCard">
+      <h2 class="card__title">Record Spill</h2>
+      <p class="hint">Continue recording to a different slot when the current slot becomes full.</p>
+      <div class="field-row">
+        <label for="spillSlotId">Slot ID</label>
+        <input id="spillSlotId" type="number" min="1" placeholder="optional" />
+      </div>
+      <div class="btn-row">
+        <button class="btn btn--sm" data-action="applyRecordSpill()">Spill to Slot</button>
+        <button class="btn btn--sm" data-action="applySpillOrderQuery()">↻ Query Spill</button>
+      </div>
+      <div id="spillOrderResult" class="result-box" hidden></div>
+    </div>
+
     <!-- Manual Add Clip -->
-    <div class="card">
+    <div class="card" id="mediaAddClipCard">
       <h2 class="card__title">Manually Add Clip to Timeline</h2>
       <p class="hint">Add a clip from the active disk list to the timeline. Specify trim points using timecode or frame numbers (mutually exclusive).</p>
       <div class="field-grid">
@@ -543,7 +543,7 @@
     </div>
 
     <!-- Slot Select -->
-    <div class="card">
+    <div class="card" id="mediaAddByFormatCard">
       <h2 class="card__title">Add Clips by Format</h2>
       <p class="hint">Applies to the current active slot. Optionally filter timeline by video format.</p>
       <div class="field-grid">
@@ -558,7 +558,7 @@
     </div>
 
     <!-- External Drives -->
-    <div class="card">
+    <div class="card" id="mediaExternalDrivesCard">
       <h2 class="card__title">External Drives
         <!-- Response: 226 external drive info: -->
       </h2>
@@ -575,7 +575,7 @@
     </div>
 
     <!-- Format Disk -->
-    <div class="card">
+    <div class="card" id="mediaFormatDiskCard">
       <h2 class="card__title">Format Disk</h2>
       <div class="warning">⚠ Irreversible — all data on the selected disk will be erased.</div>
       <p class="hint">
@@ -623,7 +623,7 @@
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-config">
 
-    <div class="card card--full">
+    <div class="card card--full" id="deviceConfigurationCard">
       <div class="card__title-row">
         <h2 class="card__title">Device Configuration
           <!-- Query: configuration  |  Response: 211 configuration: -->
@@ -795,7 +795,8 @@
     </div>
 
     <div class="card card--full">
-      <h2 class="card__title">Dashboard Preferences</h2>
+      <h2 class="card__title">Interface Preferences</h2>
+      <h3 class="section-heading">Transport Tab</h3>
       <div class="field-grid">
         <div class="field-row">
           <label for="cfgShowDynRange">Show Dynamic Range in Transport Info</label>
@@ -804,6 +805,10 @@
         <div class="field-row">
           <label for="cfgShowTransportJog">Show Jog section</label>
           <label class="toggle"><input type="checkbox" id="cfgShowTransportJog" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowTransportCustomRecord">Show Record with Custom Clip Name</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTransportCustomRecord" checked /><span class="slider"></span></label>
         </div>
         <div class="field-row">
           <label for="cfgShowTransportShuttle">Show Shuttle section</label>
@@ -819,40 +824,87 @@
         </div>
       </div>
 
-      <h3 class="section-heading">Preview Mode</h3>
-      <p class="hint">Switches between preview (input) and output mode. Stop recording before switching to output.</p>
-      <div class="field-row">
-        <label for="previewEnable">Enable Preview</label>
-        <label class="toggle"><input type="checkbox" id="previewEnable" /><span class="slider"></span></label>
-      </div>
-      <button class="btn btn--sm u-mt-sm" data-action="applyPreview()">Apply Preview</button>
-    </div>
-
-    <!-- Remote Control -->
-    <div class="card">
-      <h2 class="card__title">Remote Control
-        <!-- Query: remote  |  Response: 210 remote info: enabled, override -->
-        <!-- Async: 510 remote info: -->
-      </h2>
-      <p class="hint">Override bypasses the front-panel remote state for this connection only.</p>
+      <h3 class="section-heading">Timeline Tab</h3>
       <div class="field-grid">
         <div class="field-row">
-          <label for="cfgRemoteEnabled">Enabled</label>
-          <label class="toggle"><input type="checkbox" id="cfgRemoteEnabled" /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
-          <label for="cfgRemoteOverride">Override</label>
-          <label class="toggle"><input type="checkbox" id="cfgRemoteOverride" /><span class="slider"></span></label>
+          <label for="cfgShowTimelineAddClip">Show Manually Add Clip</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTimelineAddClip" checked /><span class="slider"></span></label>
         </div>
       </div>
-      <div class="btn-row">
-        <button class="btn btn--primary btn--sm" data-action="applyRemote()">Apply</button>
-        <button class="btn btn--sm" data-action="sendCmd('remote')">↻ Query</button>
+
+      <h3 class="section-heading">Media Tab</h3>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgShowMediaSlotInfo">Show Active Slot Info</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaSlotInfo" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowMediaRecordSpill">Show Record Spill</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaRecordSpill" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowMediaAddClip">Show Manually Add Clip</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaAddClip" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowMediaAddFormat">Show Add Clips by Format</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaAddFormat" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowMediaExternalDrives">Show External Drives</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaExternalDrives" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowMediaFormatDisk">Show Format Disk</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaFormatDisk" checked /><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <h3 class="section-heading">Tab Visibility</h3>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgShowTimelineTab">Show Timeline tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowTimelineTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowMediaTab">Show Media tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowDeviceTab">Show Device tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowDeviceTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowNasTab">Show NAS tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowNasTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowSlateTab">Show Slate tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowSlateTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowAdvancedTab">Show Advanced tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowAdvancedTab" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowConsoleTab">Show Console tab</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowConsoleTab" checked /><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <div class="card" id="previewModeCard">
+        <h2 class="card__title">Preview Mode</h2>
+        <p class="hint">Switches between preview (input) and output mode. Stop recording before switching to output.</p>
+        <div class="field-row">
+          <label for="previewEnable">Enable Preview</label>
+          <label class="toggle"><input type="checkbox" id="previewEnable" /><span class="slider"></span></label>
+        </div>
+        <button class="btn btn--sm u-mt-sm" data-action="applyPreview()">Apply Preview</button>
       </div>
     </div>
 
     <!-- Play on Startup -->
-    <div class="card">
+    <div class="card" id="playOnStartupCard">
       <h2 class="card__title">Play on Startup</h2>
       <p class="hint">Determines deck behaviour on power-up.</p>
       <div class="field-grid">
@@ -872,7 +924,7 @@
     </div>
 
     <!-- Play Option -->
-    <div class="card">
+    <div class="card" id="playOptionCard">
       <h2 class="card__title">Play Option</h2>
       <p class="hint">Determines which frame is displayed when playback stops.</p>
       <div class="field-row">
@@ -889,36 +941,9 @@
       </div>
     </div>
 
-    <!-- Connection Protocol -->
-    <div class="card">
-      <h2 class="card__title">Connection Protocol</h2>
-      <p class="hint">Version 2 changes the clip info response format for <em>clips get</em>.</p>
-      <div class="field-row">
-        <label for="connProtoVersion">Response Version</label>
-        <select id="connProtoVersion">
-          <option value="1">1 – id name startTC duration</option>
-          <option value="2">2 – id clipStartTC duration inTC outTC path</option>
-        </select>
-      </div>
-      <button class="btn btn--sm" data-action="applyConnectionProtocol()">Apply</button>
-    </div>
-
     <!-- Clips -->
-    <div class="card">
-      <h2 class="card__title">Clips</h2>
-      <p class="hint">Controls the response format used by <em>clips get</em> in the Timeline tab.</p>
-      <div class="field-row">
-        <label for="clipsGetVersion">Response Version</label>
-        <select id="clipsGetVersion" title="Protocol version 1,2,3 – controls field set returned">
-          <option value="">default (1)</option>
-          <option value="2">2 – includes in/out points</option>
-          <option value="3">3 – includes folder paths</option>
-        </select>
-      </div>
-    </div>
-
     <!-- Authenticate -->
-    <div class="card">
+    <div class="card" id="authenticateCard">
       <h2 class="card__title">Authenticate</h2>
       <p class="hint">Required when the HyperDeck is configured for secure access (error 122).</p>
       <div class="field-grid">
@@ -935,7 +960,7 @@
     </div>
 
     <!-- Dynamic Range Overrides -->
-    <div class="card">
+    <div class="card" id="dynamicRangeCard">
       <h2 class="card__title">Dynamic Range Overrides</h2>
       <p class="hint">
         Controls HDR/SDR conversion applied on playback output and/or recording input.
