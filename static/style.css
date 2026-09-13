@@ -20,7 +20,6 @@
   --text-primary:  #e8eaf0;
   --text-secondary:#8a94a8;
   --text-muted:    #4a5468;
-  --text-mono:     #a8d8a8;
 
   /* Accent / status */
   --accent-blue:   #4a90d9;
@@ -33,7 +32,6 @@
   /* Transport status colours */
   --st-play:    var(--accent-green);
   --st-record:  var(--accent-red);
-  --st-stop:    var(--text-secondary);
   --st-jog:     var(--accent-blue);
   --st-shuttle: var(--accent-cyan);
   --st-preview: var(--accent-purple);
@@ -41,10 +39,10 @@
   --st-rewind:  var(--accent-amber);
 
   /* Spacing */
-  --sp-xs: 4px;  --sp-sm: 8px;  --sp-md: 14px;  --sp-lg: 22px;  --sp-xl: 32px;
+  --sp-xs: 4px;  --sp-sm: 8px;  --sp-md: 14px;  --sp-lg: 22px;
 
   /* Radii */
-  --r-sm: 4px;  --r-md: 7px;  --r-lg: 12px;
+  --r-sm: 4px;  --r-md: 7px;
 
   /* Fonts */
   --font-ui:   system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -55,7 +53,6 @@
   --fs-xs:  .78em;
   --fs-sm:  .84em;
   --fs-md:  .88em;
-  --fs-lg:  .94em;
 
   /* Layout */
   --sidebar-w: 300px;
@@ -98,7 +95,6 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
 .dot--off         { background: var(--text-muted); }
 .dot--on          { background: var(--accent-green); box-shadow: 0 0 7px var(--accent-green); }
 .dot--no          { background: var(--accent-red);   box-shadow: 0 0 7px var(--accent-red); }
-@keyframes blink  { 50% { opacity: .3; } }
 
 /* ── Layout ───────────────────────────────────────────────── */
 .layout { display: flex; min-height: 100vh; padding-top: var(--topbar-h); }
@@ -222,12 +218,6 @@ html, body { height: 100%; background: var(--bg-page); color: var(--text-primary
   font-size: var(--fs-sm); color: var(--text-secondary);
 }
 .conn-entry-field--name { flex-grow: 2; }
-.playback-toggle-row {
-  justify-content: flex-start;
-}
-.playback-toggle-row label:first-child {
-  flex: 0 0 136px;
-}
 
 .playback-toggle-inline {
   display: flex;
@@ -557,10 +547,7 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 
 /* Keep sidebar device labels on whole-word wraps (no mid-word splits). */
 #devNameValue,
-#devModel,
-#devSwVer,
-#devProto,
-#devSlots {
+#devModel {
   word-break: normal;
   overflow-wrap: normal;
 }
@@ -892,7 +879,6 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 /* ── Misc helpers ─────────────────────────────────────────── */
 .u-mt-sm { margin-top: var(--sp-sm) !important; }
 .u-mb-sm { margin-bottom: var(--sp-sm) !important; }
-.u-gap-xs { gap: var(--sp-xs) !important; }
 
 .field-row--spacer-col2 { grid-column: 2; }
 

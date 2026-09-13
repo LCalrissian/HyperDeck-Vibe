@@ -1,7 +1,7 @@
 {
   "name": "hyperdeck-vibe",
   "version": "1.0.0",
-  "description": "HyperDeck Vibe Node.js backend",
+  "description": "Web controller UI for Blackmagic HyperDeck recorders",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

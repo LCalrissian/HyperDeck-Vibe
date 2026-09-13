@@ -12,15 +12,9 @@ const { WebSocketServer } = require("ws");
 const HYPERDECK_DEFAULT_PORT = 9993;
 const APP_DEFAULT_BIND_HOST = "0.0.0.0";
 const APP_DEFAULT_PORT = 8080;
-// Why this exists:
-// We allow tests (and future tooling) to point the server at a temporary config
-// file by setting HYPERDECK_CONFIG_PATH. In normal production use, it still
-// defaults to ./connections.json beside this file.
-//
-// Beginner takeaway:
-// Reading configuration from environment variables is a common architecture
-// pattern. It lets the same code run in different environments (local dev,
-// automated tests, CI, containers) without editing source code.
+// Reads the config path from the HYPERDECK_CONFIG_PATH environment variable,
+// allowing tests and other environments to use a separate config file.
+// Defaults to ./connections.json when the variable is not set.
 const CONFIG_JSON_PATH = path.resolve(
   process.env.HYPERDECK_CONFIG_PATH || path.join(__dirname, "connections.json"),
 );
@@ -59,7 +53,16 @@ const DEFAULT_APP_CONFIG = {
   connections: [],
 };
 
+function makeDefaultConfig() {
+  // Returns a fresh default config so callers never share the same mutable object.
+  return {
+    server: { ...DEFAULT_APP_CONFIG.server },
+    connections: [],
+  };
+}
+
 function normalizePort(value) {
+  // Parses a HyperDeck port number, defaulting non-integers to 9993 and throwing for out-of-range values.
   const parsed = Number(value);
   const port = Number.isInteger(parsed) ? parsed : HYPERDECK_DEFAULT_PORT;
   if (port < 1 || port > 65535) {
@@ -71,6 +74,7 @@ function normalizePort(value) {
 }
 
 function normalizeServerPort(value) {
+  // Parses the app's HTTP port, defaulting invalid values to 8080 instead of throwing.
   const parsed = Number(value);
   const port = Number.isInteger(parsed) ? parsed : APP_DEFAULT_PORT;
   if (port < 1 || port > 65535) {
@@ -80,19 +84,14 @@ function normalizeServerPort(value) {
 }
 
 function normalizeBindHost(value) {
+  // Trims the bind host and falls back to 0.0.0.0 when empty.
   const candidate = String(value || "").trim();
   return candidate || APP_DEFAULT_BIND_HOST;
 }
 
 function normalizeStoredConnectionPort(value) {
-  // Why this is different from normalizePort:
-  // normalizePort throws on invalid numbers, which is right for request
-  // validation. But for already-saved config we prefer resilience: if one stored
-  // entry is corrupted, we keep the app usable and fall back to a safe default.
-  //
-  // Beginner takeaway:
-  // Validation strategy depends on context. User input can be rejected loudly;
-  // persisted data often needs graceful recovery to avoid data-loss cascades.
+// Wraps normalizePort with a fallback so corrupted saved configs degrade to the
+// default port instead of crashing the app on startup.
   try {
     return normalizePort(value);
   } catch {
@@ -101,6 +100,7 @@ function normalizeStoredConnectionPort(value) {
 }
 
 function normalizeConnectionEntry(raw) {
+  // Coerces a raw saved connection into a stable shape, generating an id when missing.
   const entry = raw && typeof raw === "object" ? raw : {};
   return {
     id: String(entry.id || randomUUID()),
@@ -112,18 +112,15 @@ function normalizeConnectionEntry(raw) {
 }
 
 function normalizeConfigShape(parsed) {
+  // Normalizes a parsed config into {server, connections}, tolerating legacy layouts such as a top-level array.
   if (Array.isArray(parsed)) {
-    return {
-      server: { ...DEFAULT_APP_CONFIG.server },
-      connections: parsed.map(normalizeConnectionEntry),
-    };
+    const config = makeDefaultConfig();
+    config.connections = parsed.map(normalizeConnectionEntry);
+    return config;
   }
 
   if (!parsed || typeof parsed !== "object") {
-    return {
-      server: { ...DEFAULT_APP_CONFIG.server },
-      connections: [],
-    };
+    return makeDefaultConfig();
   }
 
   const serverSource = parsed.server && typeof parsed.server === "object"
@@ -148,66 +145,44 @@ function normalizeConfigShape(parsed) {
 }
 
 async function readAppConfig() {
+  // Reads and normalizes the config file, returning the default shape when missing or unreadable.
   try {
     const raw = await fsp.readFile(CONFIG_JSON_PATH, "utf8");
     const parsed = JSON.parse(raw);
     return normalizeConfigShape(parsed);
   } catch (error) {
     if (error && error.code === "ENOENT") {
-      return {
-        server: { ...DEFAULT_APP_CONFIG.server },
-        connections: [],
-      };
+      return makeDefaultConfig();
     }
     console.warn("Failed to read config JSON:", error.message);
-    return {
-      server: { ...DEFAULT_APP_CONFIG.server },
-      connections: [],
-    };
+    return makeDefaultConfig();
   }
 }
 
 async function writeAppConfig(config) {
+  // Normalizes and writes the config to disk as indented JSON.
   const normalized = normalizeConfigShape(config);
   await fsp.writeFile(CONFIG_JSON_PATH, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
 }
 
-async function ensureAppConfig() {
-  const config = await readAppConfig();
-  await writeAppConfig(config);
-  return config;
-}
-
 async function readBootstrapConfig() {
-  // Why this function exists:
-  // Startup has different safety requirements than normal read/write flows.
-  // If the config file is missing, we should create one. But if the file exists
-  // and is malformed, we should NOT overwrite it automatically because that could
-  // erase user data that might still be recoverable.
-  //
-  // Beginner takeaway:
-  // "Fail safely" means preserving data whenever possible. Returning
-  // shouldWriteDefaultConfig lets startServer decide whether writing is safe.
+// Reads the config file at startup with safe-fail semantics: if missing, signals
+// that defaults should be written; if present but malformed, keeps in-memory
+// defaults without overwriting the existing file.
   let raw;
   try {
     raw = await fsp.readFile(CONFIG_JSON_PATH, "utf8");
   } catch (error) {
     if (error && error.code === "ENOENT") {
       return {
-        config: {
-          server: { ...DEFAULT_APP_CONFIG.server },
-          connections: [],
-        },
+        config: makeDefaultConfig(),
         shouldWriteDefaultConfig: true,
       };
     }
 
     console.warn("Failed to read config JSON:", error.message);
     return {
-      config: {
-        server: { ...DEFAULT_APP_CONFIG.server },
-        connections: [],
-      },
+      config: makeDefaultConfig(),
       shouldWriteDefaultConfig: false,
     };
   }
@@ -221,10 +196,7 @@ async function readBootstrapConfig() {
   } catch (error) {
     console.warn("Failed to parse config JSON:", error.message);
     return {
-      config: {
-        server: { ...DEFAULT_APP_CONFIG.server },
-        connections: [],
-      },
+      config: makeDefaultConfig(),
       shouldWriteDefaultConfig: false,
     };
   }
@@ -232,10 +204,12 @@ async function readBootstrapConfig() {
 
 class DeviceState {
   constructor() {
+    // Creates device state with every field at its disconnected default.
     this.reset();
   }
 
   reset() {
+    // Resets all device state fields to their disconnected defaults.
     this.is_connected = false;
     this.host = "";
     this.port = HYPERDECK_DEFAULT_PORT;
@@ -300,12 +274,14 @@ class DeviceState {
   }
 
   toJSON() {
+    // Returns a shallow copy so broadcasts do not expose mutable internals.
     return { ...this };
   }
 }
 
 class HyperDeckTCPClient {
   constructor() {
+    // Creates a TCP client with no connection; the caller assigns onLine/onDisconnect.
     this.host = "";
     this.port = HYPERDECK_DEFAULT_PORT;
     this.connected = false;
@@ -317,6 +293,7 @@ class HyperDeckTCPClient {
   }
 
   async connect(host, port = HYPERDECK_DEFAULT_PORT) {
+    // Opens a TCP connection to a HyperDeck, disconnecting any prior socket first.
     if (this.connected) {
       await this.disconnect();
     }
@@ -367,6 +344,7 @@ class HyperDeckTCPClient {
   }
 
   async disconnect() {
+    // Closes the active socket gracefully, destroying it after a short timeout.
     if (!this.socket) {
       this.connected = false;
       return;
@@ -389,6 +367,7 @@ class HyperDeckTCPClient {
   }
 
   async send(command) {
+    // Writes a command terminated by CRLF, supporting multi-line command payloads.
     if (!this.connected || !this.socket) {
       throw new Error("Not connected to a HyperDeck");
     }
@@ -413,6 +392,7 @@ class HyperDeckTCPClient {
   }
 
   async drainLineBuffer() {
+    // Splits buffered data on newlines and forwards each complete line to onLine.
     while (this.lineBuffer.includes("\n")) {
       const idx = this.lineBuffer.indexOf("\n");
       const rawLine = this.lineBuffer.slice(0, idx);
@@ -431,21 +411,25 @@ class HyperDeckTCPClient {
 
 class WebSocketBroadcaster {
   constructor() {
+    // Holds the set of connected browser WebSocket clients.
     this.clients = new Set();
   }
 
   addClient(client) {
+    // Registers a browser client and logs the new total.
     this.clients.add(client);
     console.info(`Browser client connected (${this.clients.size} total)`);
   }
 
   removeClient(client) {
+    // Unregisters a browser client and logs the remaining count.
     if (this.clients.delete(client)) {
       console.info(`Browser client disconnected (${this.clients.size} remaining)`);
     }
   }
 
   broadcast(message) {
+    // Sends a JSON message to every connected client, skipping non-OPEN sockets.
     const payload = JSON.stringify(message);
     for (const client of this.clients) {
       if (client.readyState === 1) {
@@ -455,6 +439,7 @@ class WebSocketBroadcaster {
   }
 
   sendTo(client, message) {
+    // Sends a JSON message to a single client if its socket is OPEN.
     if (client.readyState === 1) {
       client.send(JSON.stringify(message));
     }
@@ -492,6 +477,7 @@ class HyperDeckController {
   }
 
   removeBrowserClient(ws) {
+    // Unregisters a browser client from the broadcast set.
     this.broadcaster.removeClient(ws);
   }
 
@@ -553,11 +539,9 @@ class HyperDeckController {
 
   async handleDisconnectAction() {
     // Disconnect is intentionally symmetric with connect:
-    // close TCP, reset state model, then broadcast disconnected + fresh state.
+    // close TCP, then run the standard disconnect teardown.
     await this.device.disconnect();
-    this.state.reset();
-    this.broadcaster.broadcast({ type: "disconnected" });
-    this.broadcaster.broadcast({ type: "state", state: this.state.toJSON() });
+    resetDeviceAfterDisconnect();
   }
 
   async handleCommandAction(ws, message) {
@@ -575,10 +559,8 @@ class HyperDeckController {
 
     try {
       if (command === "playrange") {
-        pendingPlayrangeQuery = true;
-        pendingPlayrangeClearCommand = false;
-        cancelPendingPlayrangeClear();
-      } else if (/^playrange\s+clear\b/i.test(command)) {
+        markPlayrangeQueryPending();
+      } else if (isPlayrangeClearCommand(command)) {
         pendingPlayrangeClearCommand = true;
         pendingPlayrangeQuery = false;
         cancelPendingPlayrangeClear();
@@ -589,7 +571,7 @@ class HyperDeckController {
       await this.device.send(command);
       this.broadcaster.broadcast({ type: "sent", line: command });
     } catch (error) {
-      if (command === "playrange" || /^playrange\s+clear\b/i.test(command)) {
+      if (command === "playrange" || isPlayrangeClearCommand(command)) {
         clearPendingPlayrangeFlags();
       }
       this.broadcaster.sendTo(ws, { type: "error", message: `Send failed: ${error.message}` });
@@ -614,6 +596,7 @@ let responseAccumulator = [];
 let inMultilineResponse = false;
 
 function buildInlineCommand(command, params) {
+  // Joins key: value params into a "command: k v k v" payload.
   const keys = Object.keys(params || {});
   if (keys.length === 0) {
     return command;
@@ -623,12 +606,14 @@ function buildInlineCommand(command, params) {
 }
 
 function parseResponseCode(firstLine) {
+  // Extracts the numeric HyperDeck response code from the first line.
   const token = String(firstLine || "").split(" ", 1)[0];
   const code = Number(token);
   return Number.isInteger(code) ? code : -1;
 }
 
 function parseKeyValueBlock(lines) {
+  // Parses multiline response bodies into a lowercase key/value map.
   const result = {};
   for (const rawLine of lines) {
     const stripped = String(rawLine || "").trim();
@@ -646,6 +631,7 @@ function parseKeyValueBlock(lines) {
 }
 
 function normalizeProtocolNone(value) {
+  // Maps "none"/"null"/"n/a" protocol values to "" and preserves real values.
   if (value === undefined || value === null) {
     return "";
   }
@@ -661,6 +647,7 @@ function normalizeProtocolNone(value) {
 }
 
 function normalizeProtocolSlotId(value) {
+  // Normalizes slot id values: "none" stays literal while "null"/"n/a" become empty.
   if (value === undefined || value === null) {
     return "";
   }
@@ -679,18 +666,7 @@ function normalizeProtocolSlotId(value) {
 }
 
 function parsePlayrangePayload(text, kv) {
-  const normalizePlayrangeValue = (value) => {
-    const raw = String(value || "").trim();
-    if (!raw) {
-      return "";
-    }
-    const lower = raw.toLowerCase();
-    if (lower === "none" || lower === "null" || lower === "n/a") {
-      return "";
-    }
-    return raw;
-  };
-
+  // Parses a playrange response into structured fields, returning null when nothing matches.
   const parsed = {
     clip_id: "",
     count: "",
@@ -703,27 +679,27 @@ function parsePlayrangePayload(text, kv) {
   let found = false;
 
   if (kv["clip id"] !== undefined) {
-    parsed.clip_id = normalizePlayrangeValue(kv["clip id"]);
+    parsed.clip_id = normalizeProtocolNone(kv["clip id"]);
     found = found || Boolean(parsed.clip_id);
   }
   if (kv["count"] !== undefined) {
-    parsed.count = normalizePlayrangeValue(kv["count"]);
+    parsed.count = normalizeProtocolNone(kv["count"]);
     found = found || Boolean(parsed.count);
   }
   if (kv["in"] !== undefined) {
-    parsed.in = normalizePlayrangeValue(kv["in"]);
+    parsed.in = normalizeProtocolNone(kv["in"]);
     found = found || Boolean(parsed.in);
   }
   if (kv["out"] !== undefined) {
-    parsed.out = normalizePlayrangeValue(kv["out"]);
+    parsed.out = normalizeProtocolNone(kv["out"]);
     found = found || Boolean(parsed.out);
   }
   if (kv["timeline in"] !== undefined) {
-    parsed.timeline_in = normalizePlayrangeValue(kv["timeline in"]);
+    parsed.timeline_in = normalizeProtocolNone(kv["timeline in"]);
     found = found || Boolean(parsed.timeline_in);
   }
   if (kv["timeline out"] !== undefined) {
-    parsed.timeline_out = normalizePlayrangeValue(kv["timeline out"]);
+    parsed.timeline_out = normalizeProtocolNone(kv["timeline out"]);
     found = found || Boolean(parsed.timeline_out);
   }
 
@@ -736,12 +712,12 @@ function parsePlayrangePayload(text, kv) {
     const timelineInMatch = normalizedText.match(/timeline\s+in:\s*([^\s]+)/i);
     const timelineOutMatch = normalizedText.match(/timeline\s+out:\s*([^\s]+)/i);
 
-    if (clipMatch && !parsed.clip_id) parsed.clip_id = normalizePlayrangeValue(clipMatch[1]);
-    if (countMatch && !parsed.count) parsed.count = normalizePlayrangeValue(countMatch[1]);
-    if (inMatch && !parsed.in) parsed.in = normalizePlayrangeValue(inMatch[1]);
-    if (outMatch && !parsed.out) parsed.out = normalizePlayrangeValue(outMatch[1]);
-    if (timelineInMatch && !parsed.timeline_in) parsed.timeline_in = normalizePlayrangeValue(timelineInMatch[1]);
-    if (timelineOutMatch && !parsed.timeline_out) parsed.timeline_out = normalizePlayrangeValue(timelineOutMatch[1]);
+    if (clipMatch && !parsed.clip_id) parsed.clip_id = normalizeProtocolNone(clipMatch[1]);
+    if (countMatch && !parsed.count) parsed.count = normalizeProtocolNone(countMatch[1]);
+    if (inMatch && !parsed.in) parsed.in = normalizeProtocolNone(inMatch[1]);
+    if (outMatch && !parsed.out) parsed.out = normalizeProtocolNone(outMatch[1]);
+    if (timelineInMatch && !parsed.timeline_in) parsed.timeline_in = normalizeProtocolNone(timelineInMatch[1]);
+    if (timelineOutMatch && !parsed.timeline_out) parsed.timeline_out = normalizeProtocolNone(timelineOutMatch[1]);
   }
 
   found = found || Boolean(
@@ -757,6 +733,7 @@ function parsePlayrangePayload(text, kv) {
 }
 
 function setPlayrangeStateFromParsed(parsed) {
+  // Marks playrange active and writes the parsed fields into shared state.
   state.playrange_active = true;
   state.playrange_clip_id = parsed.clip_id;
   state.playrange_count = parsed.count;
@@ -767,6 +744,7 @@ function setPlayrangeStateFromParsed(parsed) {
 }
 
 function clearPlayrangeState() {
+  // Marks playrange inactive and clears all its fields.
   state.playrange_active = false;
   state.playrange_clip_id = "";
   state.playrange_count = "";
@@ -777,19 +755,34 @@ function clearPlayrangeState() {
 }
 
 function cancelPendingPlayrangeClear() {
+  // Cancels a scheduled playrange clear, if one is pending.
   if (pendingPlayrangeClearTimer !== null) {
     clearTimeout(pendingPlayrangeClearTimer);
     pendingPlayrangeClearTimer = null;
   }
 }
 
+function isPlayrangeClearCommand(command) {
+  // True when a command asks to clear the play range.
+  return /^playrange\s+clear\b/i.test(String(command || ""));
+}
+
+function markPlayrangeQueryPending() {
+  // Marks a playrange query as in flight so a following 200 response does not clear it.
+  pendingPlayrangeQuery = true;
+  pendingPlayrangeClearCommand = false;
+  cancelPendingPlayrangeClear();
+}
+
 function clearPendingPlayrangeFlags() {
+  // Resets playrange query/clear flags and cancels any pending clear timer.
   pendingPlayrangeQuery = false;
   pendingPlayrangeClearCommand = false;
   cancelPendingPlayrangeClear();
 }
 
 function stopRecordingClipInfoPoll() {
+  // Stops the periodic clip-info polling used to track a recording clip name.
   recordingClipInfoPollActive = false;
   recordingClipInfoPollAttempts = 0;
   if (recordingClipInfoPollTimer !== null) {
@@ -799,6 +792,7 @@ function stopRecordingClipInfoPoll() {
 }
 
 function scheduleRecordingClipInfoPoll(delayMs = 350) {
+  // Schedules a clip info poll (up to 12 attempts) while a recording is active.
   if (!recordingClipInfoPollActive || recordingClipInfoPollAttempts >= 12) {
     return;
   }
@@ -821,6 +815,7 @@ function scheduleRecordingClipInfoPoll(delayMs = 350) {
 }
 
 function schedulePendingPlayrangeClear() {
+  // Clears playrange state shortly after a 200 unless a query is still in flight.
   cancelPendingPlayrangeClear();
   pendingPlayrangeClearTimer = setTimeout(() => {
     pendingPlayrangeClearTimer = null;
@@ -836,7 +831,20 @@ function schedulePendingPlayrangeClear() {
   }, 250);
 }
 
+/** Runs the standard post-disconnect teardown for both manual and dropped connections. */
+function resetDeviceAfterDisconnect() {
+  clearPendingPlayrangeFlags();
+  stopRecordingClipInfoPoll();
+  pendingCurrentClipInfo = false;
+  awaitingClipIdAfterClipInfo = false;
+  state.reset();
+  broadcaster.broadcast({ type: "disconnected" });
+  broadcaster.broadcast({ type: "state", state: state.toJSON() });
+}
+
 function normalizeTransportStatus(rawStatus, speed, fallbackStatus = "") {
+  // Maps raw transport status to a stable UI state, resolving deck quirks for
+  // shuttle/forward/rewind at max speed and impossible stop-at-edge states.
   const candidate = String(rawStatus || fallbackStatus || "").trim().toLowerCase();
   const normalizedSpeed = Number.isInteger(speed) ? speed : null;
 
@@ -875,25 +883,38 @@ function normalizeTransportStatus(rawStatus, speed, fallbackStatus = "") {
 }
 
 function isNotifyEnabled(kv, key) {
+  // True when a notify key is present with the value "true".
   return String(kv[key] || "").trim().toLowerCase() === "true";
 }
 
 function updateLastKnownClipId(kv) {
+  // Tracks the highest numeric clip id seen so the next record clip can be predicted.
   const ids = Object.keys(kv || {})
     .filter((key) => /^\d+$/.test(key))
     .map((key) => Number(key))
     .filter((id) => Number.isInteger(id));
-  if (ids.length === 0) {
-    return;
-  }
-  const highestId = Math.max(...ids);
-  const currentKnownId = Number(state.last_known_clip_id);
-  if (!Number.isInteger(currentKnownId) || highestId > currentKnownId) {
-    state.last_known_clip_id = String(highestId);
+  for (const id of ids) {
+    noteLastKnownClipId(id);
   }
 }
 
+function noteLastKnownClipId(observedClipId) {
+  // Bumps last_known_clip_id when the observed clip id exceeds the current known value.
+  const knownId = Number(state.last_known_clip_id);
+  if (!Number.isInteger(knownId) || observedClipId > knownId) {
+    state.last_known_clip_id = String(observedClipId);
+  }
+}
+
+async function sendNotifySubscription() {
+  // Sends the full notify subscription block used to (re)enable required notify keys.
+  await device.send(buildInlineCommand("notify", AUTO_NOTIFY_OPTIONS));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await device.send("notify");
+}
+
 async function enforceRequiredNotifySettings(kv) {
+  // Re-sends the full notify command if a required subscription was turned off.
   if (!device.connected) {
     return;
   }
@@ -904,9 +925,7 @@ async function enforceRequiredNotifySettings(kv) {
   }
 
   try {
-    await device.send(buildInlineCommand("notify", AUTO_NOTIFY_OPTIONS));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await device.send("notify");
+    await sendNotifySubscription();
     console.info("Re-enabled required notify subscriptions");
   } catch (error) {
     console.warn("Failed to re-enable notify subscriptions:", error.message);
@@ -914,6 +933,7 @@ async function enforceRequiredNotifySettings(kv) {
 }
 
 async function handleCompleteResponse(code, text, kv) {
+  // Applies a parsed HyperDeck response to device state and broadcasts it.
   let stateChanged = false;
 
   if (code === 107 && recordingClipInfoPollActive) {
@@ -989,10 +1009,7 @@ async function handleCompleteResponse(code, text, kv) {
       state.transport_clip_id_predicted = false;
       const observedClipId = Number(kv["clip id"]);
       if (Number.isInteger(observedClipId)) {
-        const knownId = Number(state.last_known_clip_id);
-        if (!Number.isInteger(knownId) || observedClipId > knownId) {
-          state.last_known_clip_id = String(observedClipId);
-        }
+        noteLastKnownClipId(observedClipId);
       }
     }
     if (code === 208 && awaitingClipIdAfterClipInfo && kv["clip id"] !== undefined) {
@@ -1014,14 +1031,13 @@ async function handleCompleteResponse(code, text, kv) {
       state.transport_reference_locked = String(kv["reference locked"]).toLowerCase() === "true";
     }
     const maybeSpeed = Number(kv["speed"]);
-    const nextTransportSpeed = Number.isInteger(maybeSpeed) ? maybeSpeed : state.transport_speed;
     if (Number.isInteger(maybeSpeed)) {
       state.transport_speed = maybeSpeed;
     }
     if (kv["status"] !== undefined || Number.isInteger(maybeSpeed)) {
       state.transport_status = normalizeTransportStatus(
         kv["status"],
-        nextTransportSpeed,
+        state.transport_speed,
         state.transport_status,
       );
     }
@@ -1040,7 +1056,7 @@ async function handleCompleteResponse(code, text, kv) {
     if (code === 508 && nextTransportStatus === "record" && device.connected) {
       recordingClipInfoPollActive = true;
       recordingClipInfoPollAttempts = 0;
-      scheduleRecordingClipInfoPoll(350);
+      scheduleRecordingClipInfoPoll();
     }
     if (code === 508 && (clipSelectionChanged || transportStartedPlaying) && device.connected) {
       pendingCurrentClipInfo = true;
@@ -1119,6 +1135,7 @@ async function handleCompleteResponse(code, text, kv) {
 }
 
 async function onHyperDeckLine(line) {
+  // Feeds raw TCP lines into the multiline accumulator and dispatches complete responses.
   if (!inMultilineResponse) {
     const firstSpace = line.indexOf(" ");
     const codeToken = firstSpace === -1 ? line : line.slice(0, firstSpace);
@@ -1156,20 +1173,14 @@ async function onHyperDeckLine(line) {
 }
 
 async function onHyperDeckDisconnect() {
-  clearPendingPlayrangeFlags();
-  stopRecordingClipInfoPoll();
-  pendingCurrentClipInfo = false;
-  awaitingClipIdAfterClipInfo = false;
-  state.reset();
-  broadcaster.broadcast({ type: "disconnected" });
-  broadcaster.broadcast({ type: "state", state: state.toJSON() });
+  // Runs the standard disconnect teardown when the TCP socket drops.
+  resetDeviceAfterDisconnect();
   console.info("HyperDeck disconnected and state reset");
 }
 
 async function primeDeviceState() {
+  // Sends the initial notify/device/transport/remote/configuration/playrange commands on connect.
   const initCommands = [
-    buildInlineCommand("notify", AUTO_NOTIFY_OPTIONS),
-    "notify",
     "device info",
     "transport info",
     "remote",
@@ -1177,12 +1188,16 @@ async function primeDeviceState() {
     "playrange",
   ];
 
+  try {
+    await sendNotifySubscription();
+  } catch (error) {
+    console.warn("Initial command failed (notify subscription):", error.message);
+  }
+
   for (const command of initCommands) {
     try {
       if (command === "playrange") {
-        pendingPlayrangeQuery = true;
-        pendingPlayrangeClearCommand = false;
-        cancelPendingPlayrangeClear();
+        markPlayrangeQueryPending();
       }
       await device.send(command);
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1202,10 +1217,12 @@ app.use(express.json({ limit: "1mb" }));
 app.use("/static", express.static(staticDir));
 
 app.get("/", (_req, res) => {
+  // Serves the single-page app at the root.
   res.sendFile(path.join(staticDir, "index.html"));
 });
 
 app.get("/api/connections", async (_req, res, next) => {
+  // Returns the saved deck connections from the config file.
   try {
     const config = await readAppConfig();
     res.json({ connections: config.connections });
@@ -1215,6 +1232,7 @@ app.get("/api/connections", async (_req, res, next) => {
 });
 
 app.get("/api/settings", async (_req, res, next) => {
+  // Returns the app server settings from the config file.
   try {
     const config = await readAppConfig();
     res.json({ settings: { server: config.server } });
@@ -1224,6 +1242,7 @@ app.get("/api/settings", async (_req, res, next) => {
 });
 
 app.patch("/api/settings/server", async (req, res, next) => {
+  // Updates the bind host/port, noting that a restart is required to take effect.
   try {
     const config = await readAppConfig();
     const nextHost = req.body?.bind_host ?? req.body?.bindHost ?? req.body?.host;
@@ -1249,6 +1268,7 @@ app.patch("/api/settings/server", async (req, res, next) => {
 });
 
 app.post("/api/connections", async (req, res, next) => {
+  // Adds a new saved deck connection after validating name and host.
   try {
     const name = String(req.body?.name || "").trim();
     const host = String(req.body?.host || "").trim();
@@ -1285,6 +1305,7 @@ app.post("/api/connections", async (req, res, next) => {
 });
 
 app.delete("/api/connections/:connectionId", async (req, res, next) => {
+  // Removes a saved deck connection by id, returning 404 when it does not exist.
   try {
     const connectionId = String(req.params.connectionId || "");
     const config = await readAppConfig();
@@ -1306,6 +1327,7 @@ app.delete("/api/connections/:connectionId", async (req, res, next) => {
 });
 
 app.put("/api/connections/reorder", async (req, res, next) => {
+  // Reorders existing connections to match the supplied id list, rejecting mismatches.
   try {
     const ids = req.body?.ids;
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -1336,6 +1358,7 @@ app.put("/api/connections/reorder", async (req, res, next) => {
 });
 
 app.patch("/api/connections/model", async (req, res, next) => {
+  // Updates the model on every connection matching the given host/port pair.
   try {
     const host = String(req.body?.host || "").trim();
     const model = String(req.body?.model || "").trim();
@@ -1374,6 +1397,7 @@ app.patch("/api/connections/model", async (req, res, next) => {
 });
 
 app.use((error, _req, res, _next) => {
+  // Central error handler that returns {detail} with the response status.
   const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
   const detail = error?.message || "Internal server error";
   res.status(statusCode).json({ detail });
@@ -1483,13 +1507,8 @@ module.exports = {
 };
 
 if (require.main === module) {
-  // This guard means:
-  // - "node server.js" starts the app
-  // - "require('./server')" from tests does NOT auto-start network listeners
-  //
-  // Beginner takeaway:
-  // Libraries should avoid side effects on import. It makes code reusable and
-  // test-friendly.
+// Only start the server when this file is run directly (node server.js), not
+// when it is require()-d from test files.
   startServer().catch((error) => {
     console.error("Failed to initialize server configuration:", error);
     process.exit(1);

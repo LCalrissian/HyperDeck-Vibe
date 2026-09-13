@@ -9,10 +9,7 @@ const {
   HYPERDECK_DEFAULT_PORT,
 } = require("../server.js");
 
-// These tests focus on deterministic pure functions.
-// Beginner takeaway:
-// Pure function tests are usually the easiest and fastest place to start because
-// they do not depend on network or filesystem state.
+// Tests for deterministic pure functions with no network or filesystem dependencies.
 
 test("normalizePort accepts valid integer port", () => {
   assert.equal(normalizePort(9993), 9993);

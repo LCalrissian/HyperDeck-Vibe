@@ -54,6 +54,8 @@ This file includes:
 - `static/index.html` - web app markup
 - `static/style.css` - styling
 - `static/app.js` - browser-side app logic
+- `test/` - unit and integration tests (run with `npm test`)
+- `scripts/setup-hooks.js` - git pre-commit hook installer
 - `connections.json` - saved local settings
 
 ## License

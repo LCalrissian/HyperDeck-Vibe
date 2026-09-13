@@ -31,7 +31,7 @@
     <h2 class="card__title card__title--centered">Dashboard</h2>
     <div class="timecode-display" id="sidebarTimecode" data-action="onSidebarTimecodeClick(event)">--:--:--:--</div>
 
-    <div class="sidebar-status-grid" id="sidebarStatusGrid">
+    <div class="sidebar-status-grid">
       <div class="sidebar-status-item"><span class="info-label">Status</span><span class="status-badge" id="tsStatus">—</span></div>
       <div class="sidebar-status-item sidebar-status-item--right sidebar-status-item--clickable" id="sidebarStatusRemoteItem" data-action="onSidebarRemoteIndicatorClick(event)"><span class="sidebar-dot-label">Remote</span><span class="dot dot--off" id="sidebarDotRemote"></span></div>
       <div class="sidebar-status-item"><span class="info-label">Format</span><span class="status-badge stopped" id="tsFormat">—</span></div>
@@ -61,7 +61,7 @@
 <section class="content">
 
   <!-- Tab navigation -->
-  <nav class="tabs" id="tabNav">
+  <nav class="tabs">
     <button class="tab active" data-tab="transport">Transport</button>
     <button class="tab" data-tab="clips">Timeline</button>
     <button class="tab" data-tab="slots">Media</button>
@@ -180,7 +180,7 @@
 
   <!-- ═══════════════════════════════════════════════════════
        TRANSPORT  – play, stop, record, jog, shuttle, goto,
-          playrange, preview
+          playrange
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel active" id="tab-transport">
 
@@ -413,8 +413,8 @@
   </div><!-- /tab-clips -->
 
   <!-- ═══════════════════════════════════════════════════════
-      MEDIA  – slot info/select/unblock, disk list,
-                       external drives, format
+      MEDIA  – current slot media, record spill, add clips by
+                       format, external drives, format disk
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-slots">
 
@@ -510,7 +510,7 @@
       <button class="btn btn--primary" data-action="applyClipAddSlots()">Add Clip</button>
     </div>
 
-    <!-- Slot Select -->
+    <!-- Add Clips by Format -->
     <div class="card" id="mediaAddByFormatCard">
       <h2 class="card__title">Add Clips by Format</h2>
       <p class="hint">Applies to the current active slot. Optionally filter timeline by video format.</p>
@@ -527,9 +527,7 @@
 
     <!-- External Drives -->
     <div class="card" id="mediaExternalDrivesCard">
-      <h2 class="card__title">External Drives
-        <!-- Response: 226 external drive info: -->
-      </h2>
+      <h2 class="card__title">External Drives</h2>
       <p class="hint">Lists USB drives not yet made active. Select a drive to activate it.</p>
       <div class="btn-row">
         <button class="btn btn--sm" data-action="sendCmd('external drive list')">↻ List</button>
@@ -950,7 +948,6 @@
       </div>
     </div>
 
-    <!-- Clips -->
     <!-- Authenticate -->
     <div class="card" id="authenticateCard">
       <h2 class="card__title">Authenticate</h2>

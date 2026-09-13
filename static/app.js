@@ -38,13 +38,8 @@ let pendingCommandListDownload = false;
 
 /** Current WebSocket instance (null when disconnected). */
 let socket = null;
-// Why this queue exists:
-// If a user clicks Connect while the WebSocket is still opening, we do not want
-// to drop their action. We temporarily queue messages and flush them once OPEN.
-//
-// Beginner takeaway:
-// Event-driven systems are asynchronous. A "not ready yet" state is normal and
-// should be handled intentionally, not treated as an error by default.
+// Buffers outbound messages while the socket is still connecting, then flushes
+// them in order once the connection opens.
 const pendingBackendMessages = [];
 
 /** Command history for the console's ↑/↓ navigation. */
@@ -76,7 +71,7 @@ let lastTimelineClipsKv = null;
 let timelineClipNameById = new Map();
 let slotMediaClipNameById = new Map();
 
-// Slot media file-size hydration architecture (beginner view):
+// Slot media file-size hydration architecture:
 // 1) lastSlotMediaKv stores the most recent 206/520 disk list snapshot.
 // 2) slotMediaClipInfoByName caches file sizes by clip name.
 // 3) slotMediaPendingByName + queuedSlotMediaClipNames +
@@ -91,7 +86,6 @@ let slotMediaClipInfoInFlightName = null;
 let slotMediaClipInfoInFlightTimeoutId = null;
 const SLOT_MEDIA_CLIP_INFO_RESPONSE_TIMEOUT_MS = 1_500;
 let lastSlotMediaNamesKey = "";
-let pendingManualClipInfoRequest = false;
 let pendingSpillOrderQuery = false;
 const knownSlotStates = {};
 let currentSlotSwitcherRenderKey = "";
@@ -330,7 +324,6 @@ function handleServerMessage(message) {
       lastSlotMediaNamesKey = "";
       lastSlotMediaKv = null;
       updateCurrentSlotMediaProgressBadge();
-      pendingManualClipInfoRequest = false;
       updateConnectionUI(false);
       stopWatchdog();
       stopTransportAutoRefresh();
@@ -487,7 +480,7 @@ function handleParsedResponse(code, text, kv) {
     // ── 202 / 502  slot info ───────────────────────────────────────────
     case 202:
     case 502:
-      displayResultBox("slotInfoResult", kv);
+      displayResultBox("nasSlotResult", kv);
       updateKnownSlotStateFromResponse(kv);
       renderCurrentSlotSwitcher(deviceState);
       renderCurrentSlotInfoSummary(deviceState);
@@ -520,7 +513,6 @@ function handleParsedResponse(code, text, kv) {
     // ── 206 / 520  disk list ───────────────────────────────────────────
     case 206:
     case 520:
-      displayResultBox("diskListResult", kv);
       maybeRenderCurrentSlotMediaTable(kv);
       break;
 
@@ -528,8 +520,7 @@ function handleParsedResponse(code, text, kv) {
     case 208:
     case 508:
       hasTransportStateHydratedForSession = true;
-      mergeTransportInfoIntoLocalState(kv);
-      applyTransportInfoResponseToUI(kv);
+      handleTransportInfoResponse(kv);
 
       const responseStatus = String(kv.status || deviceState.transport_status || "")
         .trim()
@@ -567,8 +558,7 @@ function handleParsedResponse(code, text, kv) {
 
     // ── 209  notify ────────────────────────────────────────────────────
     case 209:
-      applyNotifyStateToUI(kv);
-      break;
+      break; // state update handled via "state" message
 
     // ── 210 / 510  remote info ─────────────────────────────────────────
     case 210:
@@ -704,10 +694,6 @@ function handleParsedResponse(code, text, kv) {
         slotMediaClipInfoInFlightName = null;
         clearSlotMediaClipInfoInFlightTimeout();
         pumpSlotMediaClipInfoRequests();
-        if (pendingManualClipInfoRequest) {
-          displayResultBox("clipInfoResult", kv);
-          pendingManualClipInfoRequest = false;
-        }
       }
 
       // Some firmware versions return a custom code for the format token.
@@ -733,6 +719,7 @@ function handleParsedResponse(code, text, kv) {
 }
 
 function clearNoInputSourceLookupTimeout() {
+  // Cancels a pending no-input lookup timeout, if one is scheduled.
   if (noInputSourceLookupTimeoutId !== null) {
     clearTimeout(noInputSourceLookupTimeoutId);
     noInputSourceLookupTimeoutId = null;
@@ -740,6 +727,7 @@ function clearNoInputSourceLookupTimeout() {
 }
 
 function normalizeInputLabel(value) {
+  // Uppercases and collapses whitespace so input labels can be compared.
   return String(value || "")
     .trim()
     .replace(/\s+/g, " ")
@@ -747,6 +735,7 @@ function normalizeInputLabel(value) {
 }
 
 function triggerNoInputSourceLookup() {
+  // Schedules a "No Input" alert unless a configuration lookup resolves the input first.
   pendingNoInputSourceLookup = true;
   clearNoInputSourceLookupTimeout();
 
@@ -762,6 +751,8 @@ function triggerNoInputSourceLookup() {
 }
 
 function maybeResolveNoInputSourceLookup(kv = {}) {
+  // Once the configuration response arrives, cancels the pending alert and shows
+  // "No Input on <selected input>".
   if (!pendingNoInputSourceLookup) return;
 
   const selectedInput = normalizeInputLabel(kv["video input"] || deviceState.cfg_video_input);
@@ -889,10 +880,6 @@ function applyStateToUI(state) {
     state.port || deviceState.port || "",
   );
   setText("devModel",   state.model            || "—");
-  setText("devSwVer",   state.software_version || "—");
-  setText("devProto",   state.protocol_version || "—");
-  setText("devSlots",   state.slot_count != null ? String(state.slot_count) : "—");
-  setText("devId",      state.unique_id        || "—");
 
   setText("dashModel",    state.model            || "—");
   setText("dashSwVer",    state.software_version || "—");
@@ -903,8 +890,8 @@ function applyStateToUI(state) {
   // ── Remote info ───────────────────────────────────────────────────────
   setText("remEnabled",  boolYesNo(state.remote_enabled));
   setText("remOverride", boolYesNo(state.remote_override));
-  updateDashboardRemoteToggle(state.remote_enabled);
-  updateDashboardOverrideToggle(state.remote_override);
+  updateStateToggle("dashRemoteToggleBtn", state.remote_enabled, "Remote Enabled", "Remote Disabled");
+  updateStateToggle("dashOverrideToggleBtn", state.remote_override, "Override Enabled", "Override Disabled");
   if (state.is_connected === true) {
     setBoolDot("sidebarDotRemote",  state.remote_enabled);
     setBoolDot("sidebarDotRefLock", state.transport_reference_locked);
@@ -987,6 +974,7 @@ function applyStateToUI(state) {
 }
 
 function maybeRefreshAfterClipIdChange(state) {
+  // Re-renders the Clips tab and refreshes transport when the active clip id changes.
   const currentClipId = String(state.transport_clip_id || "").trim();
   if (currentClipId === lastObservedClipId) {
     return;
@@ -1010,6 +998,7 @@ function maybeRefreshAfterClipIdChange(state) {
 }
 
 function maybeRefreshCurrentSlotMediaAfterSlotChange(state) {
+  // Reloads slot media when the active slot changes while the Media tab is open.
   const currentSlotId = normalizeDisplayNone(state.transport_slot_id);
   if (!currentSlotId || isDisplayNoneToken(currentSlotId)) {
     lastObservedTransportSlotId = "";
@@ -1033,6 +1022,7 @@ function maybeRefreshCurrentSlotMediaAfterSlotChange(state) {
 }
 
 function maybeRefreshTimelineClipsAfterSlotChange(state) {
+  // Refetches the timeline when the active slot changes while the Clips tab is open.
   const currentSlotId = normalizeDisplayNone(state.transport_slot_id);
   if (!currentSlotId || isDisplayNoneToken(currentSlotId)) {
     lastObservedTimelineSlotId = "";
@@ -1055,6 +1045,7 @@ function maybeRefreshTimelineClipsAfterSlotChange(state) {
 }
 
 function formatSlotInfoBlocked(value) {
+  // Formats a slot "blocked" value as Yes/No, preserving unknown strings as-is.
   if (value === undefined || value === null) {
     return "—";
   }
@@ -1076,6 +1067,7 @@ function formatSlotInfoBlocked(value) {
 }
 
 function renderCurrentSlotInfoSummary(state = deviceState) {
+  // Renders the current slot summary card, exposing an unblock action when blocked.
   const activeSlot = normalizeDisplayNone(state?.transport_slot_id);
   const slotKey = (!activeSlot || isDisplayNoneToken(activeSlot)) ? "" : String(activeSlot).trim();
   const slotInfo = slotKey ? (knownSlotStates[slotKey] || {}) : {};
@@ -1127,6 +1119,7 @@ function renderCurrentSlotInfoSummary(state = deviceState) {
 }
 
 function updateKnownSlotStateFromResponse(kv) {
+  // Folds a slot info response into the knownSlotStates cache.
   const rawSlotId = normalizeDisplayNone(kv["slot id"]);
   if (!rawSlotId || isDisplayNoneToken(rawSlotId)) {
     return;
@@ -1166,6 +1159,7 @@ function updateKnownSlotStateFromResponse(kv) {
 }
 
 function loadAllSlotStates() {
+  // Queries slot info for every slot the deck reports.
   const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
   if (!Number.isInteger(slotCount) || slotCount < 1) {
     return;
@@ -1177,6 +1171,7 @@ function loadAllSlotStates() {
 }
 
 function buildSlotSelectVideoFormatOptions(modelText) {
+  // Builds the video-format dropdown options for the detected model, falling back to common formats.
   const model = String(modelText || "").trim().toLowerCase();
   const formats = new Set();
 
@@ -1213,6 +1208,7 @@ function buildSlotSelectVideoFormatOptions(modelText) {
 }
 
 function refreshSlotSelectVideoFormatOptions(state = deviceState) {
+  // Rebuilds the format dropdown only when the connected model changes.
   const selectEl = document.getElementById("slotSelectVidFmt");
   if (!selectEl) return;
 
@@ -1240,6 +1236,7 @@ function refreshSlotSelectVideoFormatOptions(state = deviceState) {
 }
 
 function renderCurrentSlotSwitcher(state) {
+  // Renders per-slot buttons and wires slot select on click, skipping re-render when unchanged.
   const hostEl = document.getElementById("currentSlotSwitcher");
   if (!hostEl) return;
 
@@ -1299,48 +1296,38 @@ function renderCurrentSlotSwitcher(state) {
   renderCurrentSlotInfoSummary(state);
 }
 
-function updateDashboardRemoteToggle(isEnabled) {
-  const btn = document.getElementById("dashRemoteToggleBtn");
+/** Update a dashboard toggle button's label and state class. */
+function updateStateToggle(buttonId, isEnabled, enabledText, disabledText) {
+  const btn = document.getElementById(buttonId);
   if (!btn) return;
   const enabled = isEnabled === true || isEnabled === "true";
 
   if (enabled) {
-    btn.textContent = "Remote Enabled";
+    btn.textContent = enabledText;
     btn.classList.remove("state-disabled");
     btn.classList.add("state-enabled");
   } else {
-    btn.textContent = "Remote Disabled";
+    btn.textContent = disabledText;
     btn.classList.remove("state-enabled");
     btn.classList.add("state-disabled");
   }
+}
+
+/** Flip a remote setting on/off and refresh remote state. */
+function toggleDashboardState(stateKey, commandVerb) {
+  const enabled = stateFlagEnabled(deviceState[stateKey]);
+  sendCmd(`remote: ${commandVerb}: ${enabled ? "false" : "true"}`);
+  requestRemoteStateRefresh();
 }
 
 function toggleDashboardRemote() {
-  const enabled = stateFlagEnabled(deviceState.remote_enabled);
-  sendCmd(`remote: enable: ${enabled ? "false" : "true"}`);
-  requestRemoteStateRefresh();
-}
-
-function updateDashboardOverrideToggle(isEnabled) {
-  const btn = document.getElementById("dashOverrideToggleBtn");
-  if (!btn) return;
-  const enabled = isEnabled === true || isEnabled === "true";
-
-  if (enabled) {
-    btn.textContent = "Override Enabled";
-    btn.classList.remove("state-disabled");
-    btn.classList.add("state-enabled");
-  } else {
-    btn.textContent = "Override Disabled";
-    btn.classList.remove("state-enabled");
-    btn.classList.add("state-disabled");
-  }
+  // Toggles remote enable and refreshes remote state.
+  toggleDashboardState("remote_enabled", "enable");
 }
 
 function toggleDashboardOverride() {
-  const enabled = stateFlagEnabled(deviceState.remote_override);
-  sendCmd(`remote: override: ${enabled ? "false" : "true"}`);
-  requestRemoteStateRefresh();
+  // Toggles remote override and refreshes remote state.
+  toggleDashboardState("remote_override", "override");
 }
 
 function requestRemoteStateRefresh() {
@@ -1350,6 +1337,7 @@ function requestRemoteStateRefresh() {
 }
 
 function stateFlagEnabled(value) {
+  // True when a state flag is boolean true or the string "true".
   return value === true || String(value).trim().toLowerCase() === "true";
 }
 
@@ -1377,6 +1365,7 @@ function setStatusBadge(elementId, status, speed = null) {
 }
 
 function hasNoInputCondition(state = deviceState) {
+  // Detects a "no input" condition from the transport status or video format fields.
   if (!state || state.is_connected !== true) return false;
   const statusText = String(state.transport_status || "").toUpperCase();
   const videoFmt = String(state.transport_video_format || "").toUpperCase();
@@ -1389,6 +1378,7 @@ function hasNoInputCondition(state = deviceState) {
 }
 
 function syncTransportActionButtons(state = deviceState) {
+  // Highlights the active transport button and disables record when no input is present.
   const stopBtn = document.getElementById("transportStopBtn");
   const playBtn = document.getElementById("transportPlayBtn");
   const recordBtn = document.getElementById("transportRecordBtn");
@@ -1447,6 +1437,7 @@ function syncTransportActionButtons(state = deviceState) {
 }
 
 function setBoolDot(elementId, value) {
+  // Sets a sidebar status dot to its on/no class based on a boolean value.
   const el = document.getElementById(elementId);
   if (!el) return;
   const isTrue = value === true || String(value).trim().toLowerCase() === "true";
@@ -1479,38 +1470,6 @@ function applyConfigurationToFormFields(kv) {
   setCheckbox("cfgAppendTimestamp", kv["append timestamp"]     === "true");
   setCheckbox("cfgUsbSpill",        kv["usb spill"]            === "true");
   setCheckbox("cfgGenlockResync",   kv["genlock input resync"] === "true");
-
-  // Also mirror remote fields (from 210 response if bundled)
-  if (kv["enabled"]  !== undefined) setCheckbox("cfgRemoteEnabled",  kv["enabled"]  === "true");
-  if (kv["override"] !== undefined) setCheckbox("cfgRemoteOverride", kv["override"] === "true");
-}
-
-/**
- * Apply a 209 notify response to the Notifications tab toggles.
- */
-function applyNotifyStateToUI(kv) {
-  const mapping = {
-    transport:        "notTransport",
-    slot:             "notSlot",
-    remote:           "notRemote",
-    configuration:    "notConfiguration",
-    "dropped frames": "notDroppedFrames",
-    "display timecode":"notDisplayTimecode",
-    "timeline position":"notTimelinePosition",
-    playrange:        "notPlayrange",
-    cache:            "notCache",
-    "dynamic range":  "notDynamicRange",
-    slate:            "notSlate",
-    clips:            "notClips",
-    disk:             "notDisk",
-    "device info":    "notDeviceInfo",
-    nas:              "notNas",
-  };
-  for (const [key, elId] of Object.entries(mapping)) {
-    if (kv[key] !== undefined) {
-      setCheckbox(elId, kv[key] === "true");
-    }
-  }
 }
 
 // ============================================================
@@ -1539,6 +1498,7 @@ function uiDisconnect() {
 }
 
 function onTopbarStatusClick(event) {
+  // Routes topbar clicks to the Connections tab when disconnected, or confirms a disconnect when connected.
   event?.stopPropagation();
   if (!deviceState.is_connected) {
     activateTab("connections");
@@ -1553,6 +1513,7 @@ function onTopbarStatusClick(event) {
 }
 
 function onSidebarTimecodeClick(event) {
+  // Opens the Connections tab when disconnected so the user can connect.
   event?.stopPropagation();
   if (deviceState.is_connected) {
     return;
@@ -1563,6 +1524,7 @@ function onSidebarTimecodeClick(event) {
 }
 
 function onSidebarRemoteIndicatorClick(event) {
+  // Opens Connections when disconnected, otherwise toggles remote control.
   event?.stopPropagation();
   if (!deviceState.is_connected) {
     activateTab("connections");
@@ -1574,6 +1536,7 @@ function onSidebarRemoteIndicatorClick(event) {
 }
 
 function jumpToPlayRangeSection(event) {
+  // Reveals the Play Range card in the Transport tab and scrolls to it.
   event?.stopPropagation();
 
   // Ensure the section is visible and keep the Config toggle mirrored.
@@ -1591,6 +1554,7 @@ function jumpToPlayRangeSection(event) {
 }
 
 function findSavedConnectionName(host, port) {
+  // Returns the saved profile name matching a host/port pair, or "" when none match.
   const normalizedHost = String(host || "").trim();
   const normalizedPort = parseInt(String(port || ""), 10);
 
@@ -1608,6 +1572,7 @@ function findSavedConnectionName(host, port) {
 }
 
 function syncTopbarConnectionIndicator(isConnected, host = "", port = "") {
+  // Sets the topbar status text to the saved name or endpoint, or "Disconnected".
   const statusText = document.getElementById("statusText");
   const topbarStatus = document.getElementById("topbarStatus");
   if (!statusText) return;
@@ -1625,6 +1590,7 @@ function syncTopbarConnectionIndicator(isConnected, host = "", port = "") {
 }
 
 function syncSidebarDeviceIdentity(isConnected, host = "", port = "") {
+  // Shows the saved profile name (or IP:port) in the sidebar device identity row.
   const labelEl = document.getElementById("devNameLabel");
   const valueEl = document.getElementById("devNameValue");
   if (!labelEl || !valueEl) return;
@@ -1686,6 +1652,7 @@ function updateConnectionUI(isConnected, host = "", port = "") {
 }
 
 async function loadConnectionProfiles() {
+  // Fetches saved connection profiles from the backend and renders the list.
   try {
     const res = await fetch(CONNECTIONS_API_BASE);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1697,7 +1664,15 @@ async function loadConnectionProfiles() {
   }
 }
 
+function isConnectedToDevice(entry) {
+  // True when the current device matches a saved connection's host and port.
+  return deviceState.is_connected === true &&
+    String(deviceState.host || "").trim() === String(entry.host || "").trim() &&
+    parseInt(String(deviceState.port || ""), 10) === parseInt(String(entry.port || ""), 10);
+}
+
 function renderConnectionProfiles() {
+  // Rebuilds the saved-connections list with connect, delete, and drag handlers.
   const list = document.getElementById("savedConnectionsList");
   if (!list) return;
 
@@ -1722,10 +1697,7 @@ function renderConnectionProfiles() {
     item.addEventListener("dragend", onConnectionDragEnd);
 
     const modelText = entry.model && String(entry.model).trim() ? entry.model : "Model unknown";
-    const isEntryConnected =
-      deviceState.is_connected === true &&
-      String(deviceState.host || "").trim() === String(entry.host || "").trim() &&
-      parseInt(String(deviceState.port || ""), 10) === parseInt(String(entry.port || ""), 10);
+    const isEntryConnected = isConnectedToDevice(entry);
 
     const connectedBadge = isEntryConnected
       ? `<div class="saved-connection-live"><span class="dot dot--on"></span><span>Connected</span></div>`
@@ -1772,10 +1744,7 @@ function onSavedConnectionClick(profileId) {
   if (!entry) return;
 
   const label = entry.name ? `${entry.name} (${entry.host}:${entry.port})` : `${entry.host}:${entry.port}`;
-  const isEntryConnected =
-    deviceState.is_connected === true &&
-    String(deviceState.host || "").trim() === String(entry.host || "").trim() &&
-    parseInt(String(deviceState.port || ""), 10) === parseInt(String(entry.port || ""), 10);
+  const isEntryConnected = isConnectedToDevice(entry);
 
   if (isEntryConnected) {
     const shouldDisconnect = window.confirm(`Disconnect from ${label}?`);
@@ -1792,6 +1761,7 @@ function onSavedConnectionClick(profileId) {
 }
 
 function selectConnectionProfile(profileId) {
+  // Populates the connection form from a saved profile.
   const entry = savedConnectionProfiles.find((p) => String(p.id) === String(profileId));
   if (!entry) return;
 
@@ -1806,7 +1776,16 @@ function selectConnectionProfile(profileId) {
   showToast("Connection fields populated", "ok");
 }
 
+async function requireOkResponse(res) {
+  // Throws with the server-provided detail (or HTTP status) on non-2xx responses.
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.detail || `HTTP ${res.status}`);
+  }
+}
+
 async function addConnectionProfileFromForm() {
+  // Saves a new connection profile from the form fields.
   const name = String(document.getElementById("connProfileName")?.value || "").trim();
   const host = String(document.getElementById("connProfileHost")?.value || "").trim();
   const port = parseInt(String(document.getElementById("connProfilePort")?.value || "9993"), 10) || 9993;
@@ -1822,10 +1801,7 @@ async function addConnectionProfileFromForm() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, host, port }),
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      throw new Error(payload.detail || `HTTP ${res.status}`);
-    }
+    await requireOkResponse(res);
 
     showToast("Saved connection", "ok");
     await loadConnectionProfiles();
@@ -1835,6 +1811,7 @@ async function addConnectionProfileFromForm() {
 }
 
 async function deleteConnectionProfile(profileId) {
+  // Deletes a saved profile after confirmation.
   const ok = window.confirm("Delete this saved connection?");
   if (!ok) return;
 
@@ -1842,10 +1819,7 @@ async function deleteConnectionProfile(profileId) {
     const res = await fetch(`${CONNECTIONS_API_BASE}/${encodeURIComponent(String(profileId))}`, {
       method: "DELETE",
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      throw new Error(payload.detail || `HTTP ${res.status}`);
-    }
+    await requireOkResponse(res);
 
     showToast("Connection deleted", "ok");
     await loadConnectionProfiles();
@@ -1855,6 +1829,7 @@ async function deleteConnectionProfile(profileId) {
 }
 
 function onConnectionDragStart(event, profileId) {
+  // Records the dragged profile and marks the source item visually.
   didConnectionDrag = true;
   draggedConnectionId = String(profileId);
   event.dataTransfer.effectAllowed = "move";
@@ -1863,11 +1838,13 @@ function onConnectionDragStart(event, profileId) {
 }
 
 function onConnectionDragOver(event) {
+  // Allows dropping by preventing the default dragover behavior.
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
 }
 
 async function onConnectionDrop(event, targetProfileId) {
+  // Rearranges the local list and persists the new order to the backend.
   event.preventDefault();
   const sourceId = draggedConnectionId || event.dataTransfer.getData("text/plain");
   const targetId = String(targetProfileId);
@@ -1894,10 +1871,7 @@ async function onConnectionDrop(event, targetProfileId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => ({}));
-      throw new Error(payload.detail || `HTTP ${res.status}`);
-    }
+    await requireOkResponse(res);
   } catch (err) {
     showToast(`Reorder failed: ${err}`, "error");
     await loadConnectionProfiles();
@@ -1905,6 +1879,7 @@ async function onConnectionDrop(event, targetProfileId) {
 }
 
 function onConnectionDragEnd(event) {
+  // Clears drag flags, deferring the synthetic-click suppression reset.
   draggedConnectionId = null;
   event.currentTarget.classList.remove("is-dragging");
   // Delay reset so any synthetic click fired after drag is still suppressed.
@@ -1914,6 +1889,7 @@ function onConnectionDragEnd(event) {
 }
 
 async function maybeSyncConnectedModel(state) {
+  // Pushes the detected deck model to the matching saved profile, once per change.
   if (!state || !state.is_connected) return;
 
   const host = String(state.host || "").trim();
@@ -1982,6 +1958,7 @@ function applyPlay() {
 }
 
 function applyPlaybackToggle(optionKey, enabled) {
+  // Applies a loop/single-clip toggle to local Playback state and sends the matching command.
   if (optionKey === "loop") {
     localPlayback.loop = enabled;
   } else if (optionKey === "single clip") {
@@ -2028,16 +2005,19 @@ function applyPlaybackToggle(optionKey, enabled) {
 }
 
 function onPlayLoopToggleChange() {
+  // Applies the Playback Loop toggle change.
   const enabled = getChecked("playLoop");
   applyPlaybackToggle("loop", enabled);
 }
 
 function onPlaySingleClipToggleChange() {
+  // Applies the Playback Single Clip toggle change.
   const enabled = getChecked("playSingleClip");
   applyPlaybackToggle("single clip", enabled);
 }
 
 function syncLocalPlaybackFromState(state) {
+  // Copies speed/status from state after transport hydration so toggles stay authoritative.
   if (!state || state.is_connected !== true) {
     return;
   }
@@ -2057,17 +2037,20 @@ function syncLocalPlaybackFromState(state) {
 }
 
 function getEffectiveTransportStatus() {
+  // Returns the current transport status from local Playback state or device state.
   if (localPlayback.status) return localPlayback.status;
   return String(deviceState.transport_status || "").trim().toUpperCase();
 }
 
 function getEffectiveTransportSpeed() {
+  // Returns the current playback speed from local Playback state or device state.
   if (Number.isFinite(localPlayback.speed)) return localPlayback.speed;
   const speed = Number.parseInt(deviceState.transport_speed ?? 0, 10);
   return Number.isFinite(speed) ? speed : 0;
 }
 
 function appendPlaybackOptionsToTransportCommand(command) {
+  // Appends pending loop/single-clip parameters to play/shuttle commands before sending.
   const cmd = String(command || "").trim();
   if (!cmd) return cmd;
 
@@ -2097,6 +2080,7 @@ function appendPlaybackOptionsToTransportCommand(command) {
 }
 
 function rememberLocalTransportFromCommand(command) {
+  // Extracts loop/single-clip/speed from a sent command to update local Playback state.
   const cmd = String(command || "").trim();
   if (!cmd) return;
 
@@ -2120,12 +2104,6 @@ function rememberLocalTransportFromCommand(command) {
     }
   }
 }
-
-/** Quick play shortcut (no extra params) used by dashboard/sidebar buttons. */
-function quickPlay() { sendCmd("play"); }
-
-/** Quick record shortcut used by dashboard/sidebar buttons. */
-function quickRecord() { sendCmd("record"); }
 
 /** Build and send the "shuttle" command. */
 function applyShuttle() {
@@ -2224,20 +2202,6 @@ function applyClipsRebuild() {
   sendCmd("clips rebuild");
 }
 
-/** Build and send a "clip info" command. */
-function applyClipInfo() {
-  const clipId = document.getElementById("clipInfoId").value.trim();
-  const name   = document.getElementById("clipInfoName").value.trim();
-  pendingManualClipInfoRequest = true;
-  if (clipId) {
-    sendCmd(`clip info: clip id: ${clipId}`);
-  } else if (name) {
-    sendCmd(`clip info: name: ${name}`);
-  } else {
-    sendCmd("clip info"); // current clip
-  }
-}
-
 /**
  * Build and send a "clips add" command.
  * Trim points are optional; if both timecode and frame numbers are provided,
@@ -2287,6 +2251,7 @@ function sendClipAddCommand(command, refreshTimeline = false) {
 }
 
 function applyClipAdd() {
+  // Runs the clips-add flow using the Timeline tab field ids.
   applyClipAddFromIds({
     name: "clipAddName",
     beforeId: "clipAddBeforeId",
@@ -2298,6 +2263,7 @@ function applyClipAdd() {
 }
 
 function applyClipAddSlots() {
+  // Runs the clips-add flow using the Slots tab field ids.
   applyClipAddFromIds({
     name: "slotClipAddName",
     beforeId: "slotClipAddBeforeId",
@@ -2334,6 +2300,7 @@ function applyRecordSpill() {
 }
 
 function applySpillOrderQuery() {
+  // Queries spill order and shows the result box as "waiting".
   pendingSpillOrderQuery = true;
   const el = document.getElementById("spillOrderResult");
   if (el) {
@@ -2343,9 +2310,14 @@ function applySpillOrderQuery() {
   sendCmd("spill order", { quiet: true });
 }
 
+function looksLikeTimecode(value) {
+  // True when a value is timecode-shaped (HH:MM:SS:FF with : or ; as the frame separator).
+  return /^\d{2}:\d{2}:\d{2}[:;]\d{2}$/.test(String(value || "").trim());
+}
+
 function looksLikeV2ClipEntry(data) {
+  // True when a clip entry row has four timecode fields, indicating the v2 shape.
   const fields = String(data || "").trim().split(/\s+/);
-  const looksLikeTimecode = (value) => /^\d{2}:\d{2}:\d{2}[:;]\d{2}$/.test(String(value || "").trim());
 
   return fields.length >= 5
     && looksLikeTimecode(fields[0])
@@ -2355,8 +2327,8 @@ function looksLikeV2ClipEntry(data) {
 }
 
 function parseTimelineClipEntry(data, isV2) {
+  // Parses a clip row into structured fields for either the v1 or v2 protocol shape.
   const fields = String(data || "").trim().split(/\s+/).filter(Boolean);
-  const looksLikeTimecode = (value) => /^\d{2}:\d{2}:\d{2}[:;]\d{2}$/.test(String(value || "").trim());
 
   if (isV2) {
     return {
@@ -2405,11 +2377,13 @@ function mergeTimelineClipAdd(previous, update) {
 }
 
 function parseClipId(value) {
+  // Parses a clip id string to a non-negative integer, or null when invalid.
   const parsed = Number.parseInt(String(value || "").trim(), 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function updateTransportClipNameIndicator(state = deviceState) {
+  // Resolves the current clip name from the timeline/slot media caches for the dashboard.
   const clipNameEl = document.getElementById("dashClipName");
   if (!clipNameEl) return;
 
@@ -2428,54 +2402,42 @@ function updateTransportClipNameIndicator(state = deviceState) {
   setText("dashClipName", clipName || "—");
 }
 
-/** Apply the fields that a 208/508 transport response updates immediately. */
-function applyTransportInfoResponseToUI(kv) {
-  if (Object.prototype.hasOwnProperty.call(kv, "clip id")) {
+/** Apply a 208/508 transport response: update immediate UI fields and the local state overlay. */
+function handleTransportInfoResponse(kv) {
+  const overlay = {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(kv, key);
+
+  if (has("clip id")) {
+    deviceState.transport_clip_id = kv["clip id"];
+    overlay.transport_clip_id = kv["clip id"];
     setText("dashClipId", kv["clip id"] || "—");
   }
-  if (Object.prototype.hasOwnProperty.call(kv, "timeline")) {
+  if (has("timeline")) {
+    deviceState.transport_timeline = kv.timeline;
+    overlay.transport_timeline = kv.timeline;
     setText("dashTimeline", kv.timeline || "—");
   }
-  if (Object.prototype.hasOwnProperty.call(kv, "video format")) {
+  if (has("video format")) {
+    deviceState.transport_video_format = kv["video format"];
+    overlay.transport_video_format = kv["video format"];
     setText("tsFormat", kv["video format"] || "—");
   }
-  if (Object.prototype.hasOwnProperty.call(kv, "speed")) {
+  if (has("speed")) {
+    deviceState.transport_speed = kv.speed;
+    overlay.transport_speed = kv.speed;
     setText("dashSpeed", formatSpeed(kv.speed));
   }
-  if (Object.prototype.hasOwnProperty.call(kv, "status")) {
+  if (has("status")) {
+    deviceState.transport_status = kv.status;
+    overlay.transport_status = kv.status;
     setStatusBadge("tsStatus", kv.status, kv.speed);
     setStatusBadge("dashStatus", kv.status, kv.speed);
   }
-}
-
-/** Merge a transport response before an older queued state snapshot can repaint the UI. */
-function mergeTransportInfoIntoLocalState(kv) {
-  const overlay = {};
-  if (Object.prototype.hasOwnProperty.call(kv, "clip id")) {
-    deviceState.transport_clip_id = kv["clip id"];
-    overlay.transport_clip_id = kv["clip id"];
-  }
-  if (Object.prototype.hasOwnProperty.call(kv, "timeline")) {
-    deviceState.transport_timeline = kv.timeline;
-    overlay.transport_timeline = kv.timeline;
-  }
-  if (Object.prototype.hasOwnProperty.call(kv, "status")) {
-    deviceState.transport_status = kv.status;
-    overlay.transport_status = kv.status;
-  }
-  if (Object.prototype.hasOwnProperty.call(kv, "speed")) {
-    deviceState.transport_speed = kv.speed;
-    overlay.transport_speed = kv.speed;
-  }
-  if (Object.prototype.hasOwnProperty.call(kv, "video format")) {
-    deviceState.transport_video_format = kv["video format"];
-    overlay.transport_video_format = kv["video format"];
-  }
-  if (Object.prototype.hasOwnProperty.call(kv, "timecode")) {
+  if (has("timecode")) {
     deviceState.transport_timecode = kv.timecode;
     overlay.transport_timecode = kv.timecode;
   }
-  if (Object.prototype.hasOwnProperty.call(kv, "display timecode")) {
+  if (has("display timecode")) {
     deviceState.transport_display_timecode = kv["display timecode"];
     overlay.transport_display_timecode = kv["display timecode"];
   }
@@ -2483,6 +2445,7 @@ function mergeTransportInfoIntoLocalState(kv) {
 }
 
 function normalizeTimelineClipInfoValue(value) {
+  // Trims a clip info value, returning "" when empty.
   const text = String(value || "").trim();
   return text || "";
 }
@@ -2551,7 +2514,7 @@ function updateCurrentSlotMediaProgressBadge() {
   const pending = total - loaded;
   badge.textContent = `Sizes ${loaded}/${total}`;
   badge.style.display = "inline-block";
-  badge.style.background = pending > 0 ? "var(--accent-yellow)" : "var(--accent-green)";
+  badge.style.background = pending > 0 ? "var(--accent-amber)" : "var(--accent-green)";
   badge.style.color = pending > 0 ? "#111" : "#fff";
 }
 
@@ -2689,8 +2652,8 @@ function requestSlotMediaClipInfo(names) {
  * Render the clips table from a 205 / 519 clips info response.
  * kv keys are clip IDs (integers); values are space-separated fields.
  *
- * Protocol version 1 (default): "id: {name} {startTC} {duration}"
- * Protocol version 2: "id: {clipStartTC} {clipDuration} {inTC} {outTC} {path}"
+ * Protocol version 2 (always requested): "id: {clipStartTC} {clipDuration} {inTC} {outTC} {path}"
+ * Protocol version 1 (still parsed for compatibility): "id: {name} {startTC} {duration}"
  */
 function renderClipsTable(kv) {
   const tbody = document.getElementById("clipsTableBody");
@@ -2704,8 +2667,8 @@ function renderClipsTable(kv) {
   const count = kv["clip count"] || clipEntries.length;
   updateClipCountBadge(count);
 
-  // Some decks return 519 rebuild snapshots in v2-style regardless of the selected dropdown.
-  // Trust the payload shape first; only fall back to the dropdown when there are no rows to inspect.
+  // Some decks return 519 rebuild snapshots in v2-style regardless.
+  // Trust the payload shape when rows are present; fall back to requestedV2 otherwise.
   const requestedV2 = true;
   const payloadLooksV2 = clipEntries.some(([, data]) => looksLikeV2ClipEntry(data));
   const isV2 = payloadLooksV2 || (clipEntries.length === 0 && requestedV2);
@@ -2799,6 +2762,7 @@ if (typeof ResizeObserver === "function") {
 }
 
 function parseDiskListEntry(data) {
+  // Parses a disk list row into name/file format/video format/duration for either protocol version.
   const raw = String(data || "").trim();
   const fields = raw.split(/\s+/).filter(Boolean);
   const looksLikeDuration = (value) => /^(\d+|\d{2}:\d{2}:\d{2}:\d{2})$/.test(String(value || ""));
@@ -2834,11 +2798,9 @@ function parseDiskListEntry(data) {
 
 /**
  * Render current slot media rows from a 206/520 disk list payload.
- * Architecture summary for students:
- * - First pass: render table immediately from disk list so UI feels instant.
- * - Second pass: enqueue per-row clip info requests by clip name.
- * - As responses arrive, maybeHandleClipInfoResponse updates cache and re-renders
- *   only to fill in file size values.
+ * The table is rendered immediately from the disk list for fast display; per-row
+ * clip info requests are then enqueued one at a time to fill in file sizes as
+ * responses arrive.
  */
 function renderCurrentSlotMediaTable(kv) {
   const tbody = document.getElementById("currentSlotMediaTableBody");
@@ -2902,6 +2864,7 @@ function renderCurrentSlotMediaTable(kv) {
 }
 
 function maybeRenderCurrentSlotMediaTable(kv) {
+  // Renders the slot media table only when the response targets the active slot.
   const responseSlotId = normalizeDisplayNone(kv["slot id"]);
   const activeSlotId = normalizeDisplayNone(deviceState.transport_slot_id);
 
@@ -2922,10 +2885,12 @@ function maybeRenderCurrentSlotMediaTable(kv) {
 }
 
 function loadCurrentSlotMedia() {
+  // Requests a fresh disk list for the current slot.
   sendCmd("disk list");
 }
 
 function appendCurrentSlotMediaClipToTimeline(clipName) {
+  // Appends a slot media clip to the timeline via "clips add".
   const name = String(clipName || "").trim();
   if (!name || name === "—") return;
   sendCmd(buildInlineCommand("clips add", { name }));
@@ -2958,15 +2923,6 @@ function removeClip(clipId) { sendCmd(`clips remove: clip id: ${clipId}`); }
 // SECTION: Slot / Disk commands
 // ============================================================
 
-/** Build and send a "slot info" query. */
-function applySlotInfo() {
-  const slotId = document.getElementById("slotInfoId").value.trim();
-  const device = document.getElementById("slotInfoDevice").value.trim();
-  if (slotId)  sendCmd(`slot info: slot id: ${slotId}`);
-  else if (device) sendCmd(`slot info: device: ${device}`);
-  else sendCmd("slot info");
-}
-
 /**
  * Build and send a "slot select" command.
  * Always targets the current active slot and optionally applies video format.
@@ -2985,24 +2941,6 @@ function applySlotSelect() {
   if (vidFormat) opts["video format"] = vidFormat;
 
   sendCmd(buildInlineCommand("slot select", opts));
-}
-
-/** Build and send a "slot unblock" command. */
-function applySlotUnblock() {
-  const slotId = document.getElementById("slotUnblockId").value.trim();
-  const device = document.getElementById("slotUnblockDevice").value.trim();
-  if (slotId)  sendCmd(`slot unblock: slot id: ${slotId}`);
-  else if (device) sendCmd(`slot unblock: device: ${device}`);
-  else sendCmd("slot unblock");
-}
-
-/** Build and send a "disk list" query. */
-function applyDiskList() {
-  const slotId = document.getElementById("diskListSlotId").value.trim();
-  const device = document.getElementById("diskListDevice").value.trim();
-  if (slotId)  sendCmd(`disk list: slot id: ${slotId}`);
-  else if (device) sendCmd(`disk list: device: ${device}`);
-  else sendCmd("disk list");
 }
 
 /** Send an "external drive select" command. */
@@ -3086,8 +3024,8 @@ function applyConfiguration() {
     if (val) opts[cmdKey] = val;
   }
 
-  // Boolean toggles — only include if checked (avoids sending unintended false)
-  // For booleans we always send the current state so the user sees the effect
+  // Booleans are always sent with their current state so toggles take effect
+  // immediately and the UI reflects the latest device configuration.
   opts["record cache"]         = getChecked("cfgRecordCache")     ? "true" : "false";
   opts["append timestamp"]     = getChecked("cfgAppendTimestamp") ? "true" : "false";
   opts["usb spill"]            = getChecked("cfgUsbSpill")        ? "true" : "false";
@@ -3108,13 +3046,6 @@ function applyConfiguration() {
   sendCmd(buildInlineCommand("configuration", opts));
 }
 
-/** Build and send a "remote" command from the Configuration tab. */
-function applyRemote() {
-  const enabled  = getChecked("cfgRemoteEnabled");
-  const override = getChecked("cfgRemoteOverride");
-  sendCmd(`remote: enable: ${enabled} override: ${override}`);
-}
-
 /**
  * Build and send the multiline "authenticate" command.
  * The spec marks this as multiline-only (parameter block, not inline).
@@ -3129,40 +3060,6 @@ function applyAuthenticate() {
     ` password: ${password}`,
   ];
   sendCmd(lines.join("\n"));
-}
-
-// ============================================================
-// SECTION: Notification commands
-// ============================================================
-
-/**
- * Build and send a "notify" command reflecting all toggle states.
- * Each toggle maps to a "notify: <key>: true|false" parameter.
- */
-function applyNotifications() {
-  const mapping = {
-    "transport":        "notTransport",
-    "slot":             "notSlot",
-    "remote":           "notRemote",
-    "configuration":    "notConfiguration",
-    "dropped frames":   "notDroppedFrames",
-    "display timecode": "notDisplayTimecode",
-    "timeline position":"notTimelinePosition",
-    "playrange":        "notPlayrange",
-    "cache":            "notCache",
-    "dynamic range":    "notDynamicRange",
-    "slate":            "notSlate",
-    "clips":            "notClips",
-    "disk":             "notDisk",
-    "device info":      "notDeviceInfo",
-    "nas":              "notNas",
-  };
-
-  const opts = {};
-  for (const [cmdKey, elId] of Object.entries(mapping)) {
-    opts[cmdKey] = getChecked(elId) ? "true" : "false";
-  }
-  sendCmd(buildInlineCommand("notify", opts));
 }
 
 // ============================================================
@@ -3184,12 +3081,19 @@ function applyDynamicRange() {
 // SECTION: Slate commands  (all multiline-only per spec)
 // ============================================================
 
+/** Build and send a multiline slate command from a field-map; empty payloads are rejected. */
+function sendSlateCommand(commandName, fieldMap, emptyMessage) {
+  const lines = buildMultilineLines(commandName, fieldMap);
+  if (lines.length <= 1) { showToast(emptyMessage, "error"); return; }
+  sendCmd(lines.join("\n"));
+}
+
 /**
  * Build and send the multiline "slate clips" command.
  * Only non-empty fields are included.
  */
 function applySlateClips() {
-  const fieldMap = {
+  sendSlateCommand("slate clips", {
     "reel":           "slateReel",
     "scene id":       "slateSceneId",
     "shot type":      "slateShotType",
@@ -3199,37 +3103,28 @@ function applySlateClips() {
     "good take":      "slateGoodTake",
     "environment":    "slateEnvironment",
     "day night":      "slateDayNight",
-  };
-  const lines = buildMultilineLines("slate clips", fieldMap);
-  if (lines.length <= 1) { showToast("Fill in at least one slate field", "error"); return; }
-  sendCmd(lines.join("\n"));
+  }, "Fill in at least one slate field");
 }
 
 /** Build and send the multiline "slate project" command. */
 function applySlateProject() {
-  const fieldMap = {
+  sendSlateCommand("slate project", {
     "project name":    "slateProjName",
     "camera":          "slateCamera",
     "director":        "slateDirector",
     "camera operator": "slateCamOp",
-  };
-  const lines = buildMultilineLines("slate project", fieldMap);
-  if (lines.length <= 1) { showToast("Fill in at least one project field", "error"); return; }
-  sendCmd(lines.join("\n"));
+  }, "Fill in at least one project field");
 }
 
 /** Build and send the multiline "slate lens" command. */
 function applySlateLens() {
-  const fieldMap = {
+  sendSlateCommand("slate lens", {
     "lens type":     "slateLensType",
     "iris":          "slateIris",
     "focal length":  "slateFocalLength",
     "distance":      "slateDistance",
     "filter":        "slateFilter",
-  };
-  const lines = buildMultilineLines("slate lens", fieldMap);
-  if (lines.length <= 1) { showToast("Fill in at least one lens field", "error"); return; }
-  sendCmd(lines.join("\n"));
+  }, "Fill in at least one lens field");
 }
 
 // ============================================================
@@ -3405,6 +3300,7 @@ function stopWatchdog() {
 }
 
 function syncTransportAutoRefresh(state = deviceState) {
+  // Starts or stops transport auto-refresh based on the current device state.
   if (shouldAutoRefreshTransport(state)) {
     startTransportAutoRefresh();
     requestTransportRefresh();
@@ -3415,6 +3311,7 @@ function syncTransportAutoRefresh(state = deviceState) {
 }
 
 function shouldAutoRefreshTransport(state = deviceState) {
+  // True when transport polling should continue: recording, moving, or inside a transition window.
   const status = String(state.transport_status || "").toUpperCase();
   const speed = Number.parseInt(state.transport_speed ?? 0, 10);
 
@@ -3440,6 +3337,7 @@ function shouldAutoRefreshTransport(state = deviceState) {
 }
 
 function startTransportAutoRefresh() {
+  // Starts the periodic transport-refresh interval if it is not already running.
   if (transportRefreshIntervalId !== null) {
     return;
   }
@@ -3455,6 +3353,7 @@ function startTransportAutoRefresh() {
 }
 
 function stopTransportAutoRefresh() {
+  // Stops the refresh interval and clears all pending refresh timers and state.
   if (transportRefreshIntervalId !== null) {
     clearInterval(transportRefreshIntervalId);
     transportRefreshIntervalId = null;
@@ -3471,6 +3370,7 @@ function stopTransportAutoRefresh() {
 }
 
 function queueStoppedNotifyTransportRefresh() {
+  // Schedules a single transport refresh shortly after a STOPPED 508 notify.
   if (!isSocketOpen()) {
     return;
   }
@@ -3486,6 +3386,7 @@ function queueStoppedNotifyTransportRefresh() {
 }
 
 function requestTransportRefresh() {
+  // Sends a transport info query unless one is already in flight.
   if (!isSocketOpen() || transportRefreshInFlight) {
     return;
   }
@@ -3501,6 +3402,7 @@ function requestTransportRefresh() {
 }
 
 function clearTransportRefreshInFlight() {
+  // Marks the transport refresh as done and clears its timeout.
   transportRefreshInFlight = false;
   if (transportRefreshTimeoutId !== null) {
     clearTimeout(transportRefreshTimeoutId);
@@ -3509,6 +3411,7 @@ function clearTransportRefreshInFlight() {
 }
 
 function armTransportRefreshWindow(command) {
+  // Arms a short refresh window after transport commands so the status settles visibly.
   if (!shouldArmTransportRefreshFromCommand(command)) {
     return;
   }
@@ -3520,6 +3423,7 @@ function armTransportRefreshWindow(command) {
 }
 
 function shouldArmTransportRefreshFromCommand(command) {
+  // True when a command is a transport-type command worth auto-refreshing after.
   const normalized = String(command || "").trim().toLowerCase();
   if (!normalized) {
     return false;
@@ -3657,6 +3561,7 @@ function displayResultBox(elementId, kv) {
 }
 
 function displayResultBoxFromPayload(elementId, kv, rawText = "") {
+  // Shows key/value data, falling back to raw text when no data keys are present.
   if (kv && Object.keys(kv).length > 0) {
     displayResultBox(elementId, kv);
     return;
@@ -3708,8 +3613,8 @@ function getValue(id) {
 }
 
 /**
- * Get the raw value of a form element without trimming.
- * Used in multiline builders where leading whitespace may be meaningful.
+ * Get the trimmed value of a form element.
+ * Used in multiline builders where trimming is intentional.
  */
 function getValueRaw(id) {
   return getValue(id).trim();
@@ -3754,6 +3659,7 @@ function setSelectIfKnown(id, value) {
 }
 
 function normalizeDisplayNone(value) {
+  // Normalizes "null"/"n/a" display tokens to an empty string.
   const raw = String(value || "").trim();
   if (!raw) return "";
   const lower = raw.toLowerCase();
@@ -3762,10 +3668,12 @@ function normalizeDisplayNone(value) {
 }
 
 function isDisplayNoneToken(value) {
+  // True when the value is the literal token "none".
   return String(value || "").trim().toLowerCase() === "none";
 }
 
 function formatSlotIdDisplay(value) {
+  // Formats a slot id, mapping empty to "—" and "none" to "None".
   const normalized = normalizeDisplayNone(value);
   if (!normalized) return "—";
   if (isDisplayNoneToken(normalized)) return "None";
@@ -3812,14 +3720,8 @@ function boolYesNo(value) {
   return "—";
 }
 
-/** Return "Enabled" / "Disabled" for boolean state values. */
-function boolEnabledDisabled(value) {
-  if (value === true  || value === "true")  return "✓ Enabled";
-  if (value === false || value === "false") return "✗ Disabled";
-  return "—";
-}
-
 function loadUiPreferences() {
+  // Loads persisted UI preferences from localStorage into the uiPreferences object.
   try {
     const raw = localStorage.getItem(UI_PREFERENCES_STORAGE_KEY);
     if (!raw) return;
@@ -3879,6 +3781,7 @@ function loadUiPreferences() {
 }
 
 function saveUiPreferences() {
+  // Persists the current uiPreferences object to localStorage.
   try {
     localStorage.setItem(UI_PREFERENCES_STORAGE_KEY, JSON.stringify(uiPreferences));
   } catch {
@@ -3887,6 +3790,7 @@ function saveUiPreferences() {
 }
 
 function applyUiPreferencesToUI() {
+  // Applies all persisted UI preferences to element visibility and toggle states.
   const showDynamicRange = uiPreferences.showDynamicRangeInTransportInfo !== false;
   const showTransportCustomRecord = uiPreferences.showTransportCustomRecord !== false;
   const showTransportShuttle = uiPreferences.showTransportShuttle !== false;
@@ -4022,64 +3926,81 @@ function initTransportButtonsWrapObserver() {
   update();
 }
 
-function onCfgShowDynRangeToggleChange() {
-  uiPreferences.showDynamicRangeInTransportInfo = getChecked("cfgShowDynRange");
+/** Persist one group of checkbox-driven preferences, then reapply the UI. */
+function handlePreferenceToggleChange(toggles, applyFn = applyUiPreferencesToUI) {
+  for (const [checkboxId, prefKey] of Object.entries(toggles)) {
+    uiPreferences[prefKey] = getChecked(checkboxId);
+  }
   saveUiPreferences();
-  applyUiPreferencesToUI();
+  applyFn();
+}
+
+const TRANSPORT_SECTION_PREF_TOGGLES = {
+  cfgShowTransportCustomRecord: "showTransportCustomRecord",
+  cfgShowTransportShuttle: "showTransportShuttle",
+  cfgShowTransportGoto: "showTransportGoto",
+  cfgShowTransportPlayRange: "showTransportPlayRange",
+  cfgShowTransportLoop: "showTransportLoop",
+  cfgShowTransportSingleClip: "showTransportSingleClip",
+};
+
+const TIMELINE_MEDIA_PREF_TOGGLES = {
+  cfgShowTimelineAddClip: "showTimelineAddClip",
+  cfgShowMediaSlotInfo: "showMediaSlotInfo",
+  cfgShowMediaRecordSpill: "showMediaRecordSpill",
+  cfgShowMediaAddClip: "showMediaAddClip",
+  cfgShowMediaAddFormat: "showMediaAddFormat",
+  cfgShowMediaExternalDrives: "showMediaExternalDrives",
+  cfgShowMediaFormatDisk: "showMediaFormatDisk",
+};
+
+const TAB_VISIBILITY_PREF_TOGGLES = {
+  cfgShowTimelineTab: "showTimelineTab",
+  cfgShowMediaTab: "showMediaTab",
+  cfgShowDeviceTab: "showDeviceTab",
+  cfgShowNasTab: "showNasTab",
+  cfgShowSlateTab: "showSlateTab",
+  cfgShowAdvancedTab: "showAdvancedTab",
+  cfgShowConsoleTab: "showConsoleTab",
+};
+
+const DASHBOARD_PREF_TOGGLES = {
+  cfgShowDashboard: "showDashboard",
+  cfgShowDashboardRemote: "showDashboardRemote",
+  cfgShowDashboardRefLock: "showDashboardRefLock",
+  cfgShowDashboardDeviceInfo: "showDashboardDeviceInfo",
+  cfgShowDashboardModel: "showDashboardModel",
+  cfgPinDashboardToTopMobile: "pinDashboardToTopMobile",
+};
+
+function onCfgShowDynRangeToggleChange() {
+  // Saves and applies the dynamic-range display preference.
+  handlePreferenceToggleChange({ cfgShowDynRange: "showDynamicRangeInTransportInfo" });
 }
 
 function onCfgShowTransportSectionsToggleChange() {
-  uiPreferences.showTransportCustomRecord = getChecked("cfgShowTransportCustomRecord");
-  uiPreferences.showTransportShuttle = getChecked("cfgShowTransportShuttle");
-  uiPreferences.showTransportGoto = getChecked("cfgShowTransportGoto");
-  uiPreferences.showTransportPlayRange = getChecked("cfgShowTransportPlayRange");
-  uiPreferences.showTransportLoop = getChecked("cfgShowTransportLoop");
-  uiPreferences.showTransportSingleClip = getChecked("cfgShowTransportSingleClip");
-  saveUiPreferences();
-  applyUiPreferencesToUI();
+  // Saves and applies Transport section visibility preferences.
+  handlePreferenceToggleChange(TRANSPORT_SECTION_PREF_TOGGLES);
+}
+
+function onCfgShowTimelineMediaToggleChange() {
+  // Saves and applies Timeline/Media tab visibility preferences.
+  handlePreferenceToggleChange(TIMELINE_MEDIA_PREF_TOGGLES);
+}
+
+function onCfgShowTabVisibilityChange() {
+  // Saves and applies visibility preferences for non-critical top-level tabs.
+  handlePreferenceToggleChange(TAB_VISIBILITY_PREF_TOGGLES, applyTabVisibilityPreferences);
+}
+
+function onCfgShowDashboardToggleChange() {
+  // Saves and applies Dashboard sidebar visibility preferences.
+  handlePreferenceToggleChange(DASHBOARD_PREF_TOGGLES);
 }
 
 /** Keep the Transport-tab and Dashboard-section pin toggles in sync regardless of which one changed. */
 function onCfgPinTransportToDashboardToggleChange(event) {
   uiPreferences.pinTransportToDashboard = event.target.checked;
-  saveUiPreferences();
-  applyUiPreferencesToUI();
-}
-
-/** Apply and save Timeline/Media tab visibility preferences. */
-function onCfgShowTimelineMediaToggleChange() {
-  uiPreferences.showTimelineAddClip = getChecked("cfgShowTimelineAddClip");
-  uiPreferences.showMediaSlotInfo = getChecked("cfgShowMediaSlotInfo");
-  uiPreferences.showMediaRecordSpill = getChecked("cfgShowMediaRecordSpill");
-  uiPreferences.showMediaAddClip = getChecked("cfgShowMediaAddClip");
-  uiPreferences.showMediaAddFormat = getChecked("cfgShowMediaAddFormat");
-  uiPreferences.showMediaExternalDrives = getChecked("cfgShowMediaExternalDrives");
-  uiPreferences.showMediaFormatDisk = getChecked("cfgShowMediaFormatDisk");
-  saveUiPreferences();
-  applyUiPreferencesToUI();
-}
-
-/** Apply and save visibility preferences for non-critical top-level tabs. */
-function onCfgShowTabVisibilityChange() {
-  uiPreferences.showTimelineTab = getChecked("cfgShowTimelineTab");
-  uiPreferences.showMediaTab = getChecked("cfgShowMediaTab");
-  uiPreferences.showDeviceTab = getChecked("cfgShowDeviceTab");
-  uiPreferences.showNasTab = getChecked("cfgShowNasTab");
-  uiPreferences.showSlateTab = getChecked("cfgShowSlateTab");
-  uiPreferences.showAdvancedTab = getChecked("cfgShowAdvancedTab");
-  uiPreferences.showConsoleTab = getChecked("cfgShowConsoleTab");
-  saveUiPreferences();
-  applyTabVisibilityPreferences();
-}
-
-/** Apply and save Dashboard sidebar visibility preferences. */
-function onCfgShowDashboardToggleChange() {
-  uiPreferences.showDashboard = getChecked("cfgShowDashboard");
-  uiPreferences.showDashboardRemote = getChecked("cfgShowDashboardRemote");
-  uiPreferences.showDashboardRefLock = getChecked("cfgShowDashboardRefLock");
-  uiPreferences.showDashboardDeviceInfo = getChecked("cfgShowDashboardDeviceInfo");
-  uiPreferences.showDashboardModel = getChecked("cfgShowDashboardModel");
-  uiPreferences.pinDashboardToTopMobile = getChecked("cfgPinDashboardToTopMobile");
   saveUiPreferences();
   applyUiPreferencesToUI();
 }
@@ -4118,6 +4039,7 @@ function applyTabVisibilityPreferences() {
 }
 
 function escapeHtml(value) {
+  // Escapes a string for safe insertion into HTML markup.
   return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -4127,6 +4049,7 @@ function escapeHtml(value) {
 }
 
 function initResizableTable(tableId) {
+  // Adds draggable column-resize handles to a table's header cells.
   const table = document.getElementById(tableId);
   if (!table) return;
 
@@ -4176,11 +4099,9 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "applyAuthenticate",
   "applyClipAdd",
   "applyClipAddSlots",
-  "applyClipInfo",
   "applyClipsGet",
   "applyClipsRebuild",
   "applyConfiguration",
-  "applyDiskList",
   "applyDynamicRange",
   "applyExtDriveSelect",
   "applyFormatConfirm",
@@ -4198,15 +4119,12 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "applyRecord",
   "applyRecordSpill",
   "applySpillOrderQuery",
-  "applyRemote",
   "applyShuttle",
   "applyShuttlePreset",
   "applySlateClips",
   "applySlateLens",
   "applySlateProject",
-  "applySlotInfo",
   "applySlotSelect",
-  "applySlotUnblock",
   "applyWatchdog",
   "clearConsole",
   "confirmClipsClear",
@@ -4301,11 +4219,7 @@ function parseActionArgument(token, event) {
 
 function runDeclarativeAction(expression, event) {
   // Parses "functionName(arg1, arg2)" from data-action/data-change and calls the
-  // real function if it is allowlisted.
-  //
-  // Beginner takeaway:
-  // Centralized dispatch gives a clear place to validate and instrument UI
-  // actions, which is easier to maintain than many scattered inline handlers.
+  // allowlisted function if found in DECLARATIVE_ACTION_FUNCTIONS.
   const text = String(expression || "").trim();
   if (!text) {
     return;
@@ -4370,9 +4284,41 @@ function attachDeclarativeEventHandlers() {
 // ============================================================
 
 /** Wire up all tabs, attach Enter key to connection form, and auto-open WebSocket. */
+const PREF_TOGGLE_LISTENERS = {
+  cfgShowDynRange: onCfgShowDynRangeToggleChange,
+  cfgShowTransportCustomRecord: onCfgShowTransportSectionsToggleChange,
+  cfgShowTransportShuttle: onCfgShowTransportSectionsToggleChange,
+  cfgShowTransportGoto: onCfgShowTransportSectionsToggleChange,
+  cfgShowTransportPlayRange: onCfgShowTransportSectionsToggleChange,
+  cfgShowTransportLoop: onCfgShowTransportSectionsToggleChange,
+  cfgShowTransportSingleClip: onCfgShowTransportSectionsToggleChange,
+  cfgPinTransportToDashboard: onCfgPinTransportToDashboardToggleChange,
+  cfgPinTransportToDashboard2: onCfgPinTransportToDashboardToggleChange,
+  cfgShowTimelineAddClip: onCfgShowTimelineMediaToggleChange,
+  cfgShowMediaSlotInfo: onCfgShowTimelineMediaToggleChange,
+  cfgShowMediaRecordSpill: onCfgShowTimelineMediaToggleChange,
+  cfgShowMediaAddClip: onCfgShowTimelineMediaToggleChange,
+  cfgShowMediaAddFormat: onCfgShowTimelineMediaToggleChange,
+  cfgShowMediaExternalDrives: onCfgShowTimelineMediaToggleChange,
+  cfgShowMediaFormatDisk: onCfgShowTimelineMediaToggleChange,
+  cfgShowTimelineTab: onCfgShowTabVisibilityChange,
+  cfgShowMediaTab: onCfgShowTabVisibilityChange,
+  cfgShowDeviceTab: onCfgShowTabVisibilityChange,
+  cfgShowNasTab: onCfgShowTabVisibilityChange,
+  cfgShowSlateTab: onCfgShowTabVisibilityChange,
+  cfgShowAdvancedTab: onCfgShowTabVisibilityChange,
+  cfgShowConsoleTab: onCfgShowTabVisibilityChange,
+  cfgShowDashboard: onCfgShowDashboardToggleChange,
+  cfgShowDashboardRemote: onCfgShowDashboardToggleChange,
+  cfgShowDashboardRefLock: onCfgShowDashboardToggleChange,
+  cfgShowDashboardDeviceInfo: onCfgShowDashboardToggleChange,
+  cfgShowDashboardModel: onCfgShowDashboardToggleChange,
+  cfgPinDashboardToTopMobile: onCfgShowDashboardToggleChange,
+};
+
 function initUI() {
   loadUiPreferences();
-  moveDeviceConfigurationCard();
+  insertBeforeRemoteCard("deviceConfigurationCard");
   combineConfigurationCards();
   attachConfigurationAutoApply();
   movePlayOnStartupCard();
@@ -4403,35 +4349,11 @@ function initUI() {
 
   document.getElementById("playLoop")?.addEventListener("change", onPlayLoopToggleChange);
   document.getElementById("playSingleClip")?.addEventListener("change", onPlaySingleClipToggleChange);
-  document.getElementById("cfgShowDynRange")?.addEventListener("change", onCfgShowDynRangeToggleChange);
-  document.getElementById("cfgShowTransportCustomRecord")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
-  document.getElementById("cfgShowTransportShuttle")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
-  document.getElementById("cfgShowTransportGoto")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
-  document.getElementById("cfgShowTransportPlayRange")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
-  document.getElementById("cfgShowTransportLoop")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
-  document.getElementById("cfgShowTransportSingleClip")?.addEventListener("change", onCfgShowTransportSectionsToggleChange);
-  document.getElementById("cfgPinTransportToDashboard")?.addEventListener("change", onCfgPinTransportToDashboardToggleChange);
-  document.getElementById("cfgPinTransportToDashboard2")?.addEventListener("change", onCfgPinTransportToDashboardToggleChange);
-  document.getElementById("cfgShowTimelineAddClip")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
-  document.getElementById("cfgShowMediaSlotInfo")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
-  document.getElementById("cfgShowMediaRecordSpill")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
-  document.getElementById("cfgShowMediaAddClip")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
-  document.getElementById("cfgShowMediaAddFormat")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
-  document.getElementById("cfgShowMediaExternalDrives")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
-  document.getElementById("cfgShowMediaFormatDisk")?.addEventListener("change", onCfgShowTimelineMediaToggleChange);
-  document.getElementById("cfgShowTimelineTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
-  document.getElementById("cfgShowMediaTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
-  document.getElementById("cfgShowDeviceTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
-  document.getElementById("cfgShowNasTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
-  document.getElementById("cfgShowSlateTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
-  document.getElementById("cfgShowAdvancedTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
-  document.getElementById("cfgShowConsoleTab")?.addEventListener("change", onCfgShowTabVisibilityChange);
-  document.getElementById("cfgShowDashboard")?.addEventListener("change", onCfgShowDashboardToggleChange);
-  document.getElementById("cfgShowDashboardRemote")?.addEventListener("change", onCfgShowDashboardToggleChange);
-  document.getElementById("cfgShowDashboardRefLock")?.addEventListener("change", onCfgShowDashboardToggleChange);
-  document.getElementById("cfgShowDashboardDeviceInfo")?.addEventListener("change", onCfgShowDashboardToggleChange);
-  document.getElementById("cfgShowDashboardModel")?.addEventListener("change", onCfgShowDashboardToggleChange);
-  document.getElementById("cfgPinDashboardToTopMobile")?.addEventListener("change", onCfgShowDashboardToggleChange);
+
+  for (const [elementId, handler] of Object.entries(PREF_TOGGLE_LISTENERS)) {
+    document.getElementById(elementId)?.addEventListener("change", handler);
+  }
+
   document.getElementById("tsPlayRange")?.addEventListener("click", jumpToPlayRangeSection);
   document.getElementById("playbackPlayRangeSetBadge")?.addEventListener("click", jumpToPlayRangeSection);
 
@@ -4453,9 +4375,9 @@ function initUI() {
   consoleLog("HyperDeck Vibe ready. Enter the device IP address and click Connect.", "cl--connect");
 }
 
-/** Move the full editable Device Configuration card into the Device tab. */
-function moveDeviceConfigurationCard() {
-  const card = document.getElementById("deviceConfigurationCard");
+function insertBeforeRemoteCard(cardId) {
+  // Moves a card to just before the Remote toggle card inside the Device tab.
+  const card = document.getElementById(cardId);
   const devicePanel = document.getElementById("tab-device");
   const remoteCard = devicePanel?.querySelector("#dashRemoteToggleBtn")?.closest(".card");
   if (card && devicePanel && remoteCard) {
@@ -4490,34 +4412,19 @@ function attachConfigurationAutoApply() {
 
 /** Move the Play on Startup controls into the Device tab. */
 function movePlayOnStartupCard() {
-  const card = document.getElementById("playOnStartupCard");
-  const devicePanel = document.getElementById("tab-device");
-  const remoteCard = devicePanel?.querySelector("#dashRemoteToggleBtn")?.closest(".card");
-  if (card && devicePanel && remoteCard) {
-    devicePanel.insertBefore(card, remoteCard);
-  }
+  insertBeforeRemoteCard("playOnStartupCard");
 }
 
 /** Move Device-tab utility cards out of the Configuration tab. */
 function moveDeviceUtilityCards() {
-  const devicePanel = document.getElementById("tab-device");
-  const remoteCard = devicePanel?.querySelector("#dashRemoteToggleBtn")?.closest(".card");
-  if (!devicePanel || !remoteCard) return;
-
   for (const id of ["playOptionCard", "authenticateCard", "dynamicRangeCard"]) {
-    const card = document.getElementById(id);
-    if (card) devicePanel.insertBefore(card, remoteCard);
+    insertBeforeRemoteCard(id);
   }
 }
 
 /** Move Preview Mode into its own Device-tab card. */
 function movePreviewModeCard() {
-  const card = document.getElementById("previewModeCard");
-  const devicePanel = document.getElementById("tab-device");
-  const remoteCard = devicePanel?.querySelector("#dashRemoteToggleBtn")?.closest(".card");
-  if (card && devicePanel && remoteCard) {
-    devicePanel.insertBefore(card, remoteCard);
-  }
+  insertBeforeRemoteCard("previewModeCard");
 }
 
 // Bootstrap when DOM is ready
