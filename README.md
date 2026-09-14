@@ -67,15 +67,15 @@ This project was written nearly entirely by GitHub Copilot; I essentially gave i
 ## SCREENSHOTS
 <kbd>
 <img width="909" height="760" alt="image" src="https://github.com/user-attachments/assets/6bd5042c-569d-4e04-a219-ffb276e122ee" />
-</kbd>
+</kbd>  
 <kbd>
 <img width="1614" height="635" alt="image" src="https://github.com/user-attachments/assets/aebd9fdd-cef2-4890-a861-722a400ceb80" />
-</kbd>
+</kbd>  
 <kbd>
 <img width="422" height="574" alt="image" src="https://github.com/user-attachments/assets/9fde4541-19ff-436e-ad19-42c31ecb49d5" />
-<br>
+<br>  
 UI is responsive and should also look good on Mobile. 
-</kbd>
+</kbd>  
 
 
 
