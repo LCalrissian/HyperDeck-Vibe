@@ -86,6 +86,13 @@ let slotMediaClipInfoInFlightName = null;
 let slotMediaClipInfoInFlightTimeoutId = null;
 const SLOT_MEDIA_CLIP_INFO_RESPONSE_TIMEOUT_MS = 1_500;
 let lastSlotMediaNamesKey = "";
+let currentSlotMediaSlotId = "";
+let recordingInProgress = false;
+let recordingEndedAtMs = 0;
+let recordingClipAppendedName = "";
+const RECORDING_CLIP_SETTLE_MS = 30_000;
+let postRecordingMediaRefreshTimeoutId = null;
+const POST_RECORDING_MEDIA_REFRESH_DELAY_MS = 800;
 let pendingSpillOrderQuery = false;
 const knownSlotStates = {};
 let currentSlotSwitcherRenderKey = "";
@@ -306,6 +313,7 @@ function handleServerMessage(message) {
     case "connected":
       hasTransportStateHydratedForSession = false;
       updateConnectionUI(true, message.host, message.port);
+      activateTab("transport");
       startWatchdog();
       break;
 
@@ -323,8 +331,14 @@ function handleServerMessage(message) {
       clearSlotMediaClipInfoInFlightTimeout();
       lastSlotMediaNamesKey = "";
       lastSlotMediaKv = null;
+      currentSlotMediaSlotId = "";
+      recordingInProgress = false;
+      recordingEndedAtMs = 0;
+      recordingClipAppendedName = "";
+      clearPostRecordingMediaRefresh();
       updateCurrentSlotMediaProgressBadge();
       updateConnectionUI(false);
+      activateTab("connections");
       stopWatchdog();
       stopTransportAutoRefresh();
       break;
@@ -510,10 +524,16 @@ function handleParsedResponse(code, text, kv) {
       }
       break;
 
-    // ── 206 / 520  disk list ───────────────────────────────────────────
+    // ── 206  disk list (authoritative reply to a "disk list" command) ──
     case 206:
+      maybeRenderCurrentSlotMediaTable(kv, { keepExisting: false });
+      break;
+
+    // ── 520  disk list notify ─────────────────────────────────────────
+    // A notify can carry only the newly recorded clip, so we merge it into
+    // the cached list rather than replacing the files already on the card.
     case 520:
-      maybeRenderCurrentSlotMediaTable(kv);
+      maybeRenderCurrentSlotMediaTable(kv, { keepExisting: true });
       break;
 
     // ── 208 / 508  transport info ──────────────────────────────────────
@@ -521,6 +541,7 @@ function handleParsedResponse(code, text, kv) {
     case 508:
       hasTransportStateHydratedForSession = true;
       handleTransportInfoResponse(kv);
+      syncRecordingPlaceholder(deviceState);
 
       const responseStatus = String(kv.status || deviceState.transport_status || "")
         .trim()
@@ -921,6 +942,7 @@ function applyStateToUI(state) {
   renderCurrentSlotSwitcher(state);
   renderCurrentSlotInfoSummary(state);
   syncTransportAutoRefresh(state);
+  syncRecordingPlaceholder(state);
 
   // ── Play Range status ─────────────────────────────────────────────────
   {
@@ -1342,6 +1364,49 @@ function stateFlagEnabled(value) {
 }
 
 /**
+ * Normalize a raw transport status + speed into a stable app-level state.
+ * Mirrors the backend's normalizeTransportStatus so the client overlay always
+ * agrees with the authoritative server state (shuttle ±5000 -> forward/rewind,
+ * shuttle at 0 -> paused, normal-speed shuttle -> play, etc.).
+ */
+function normalizeTransportStatus(rawStatus, speed, fallbackStatus = "") {
+  const candidate = String(rawStatus || fallbackStatus || "").trim().toLowerCase();
+  const normalizedSpeed = Number.isInteger(Number(speed)) ? Number(speed) : null;
+
+  if (!candidate) {
+    return "";
+  }
+
+  if (candidate === "preview") {
+    return "preview";
+  }
+
+  if (["shuttle", "forward", "rewind"].includes(candidate) && normalizedSpeed === 5000) {
+    return "forward";
+  }
+  if (["shuttle", "forward", "rewind"].includes(candidate) && normalizedSpeed === -5000) {
+    return "rewind";
+  }
+
+  if (candidate === "shuttle" && normalizedSpeed === 100) {
+    return "play";
+  }
+
+  if (candidate === "shuttle" && normalizedSpeed === 0) {
+    return "paused";
+  }
+
+  if (
+    normalizedSpeed === 0 &&
+    ["play", "forward", "rewind", "jog"].includes(candidate)
+  ) {
+    return "stopped";
+  }
+
+  return candidate;
+}
+
+/**
  * Set the visual class (colour) of a status badge element based on transport status.
  * The class name matches the CSS .status-badge.{status} rules in style.css.
  */
@@ -1350,10 +1415,16 @@ function setStatusBadge(elementId, status, speed = null) {
   if (!el) return;
 
   const normalizedStatus = String(status || "").trim().toUpperCase();
+  const rawSpeed = (speed === undefined || speed === null || speed === "") ? null : Number.parseInt(speed, 10);
+  const parsedSpeed = Number.isFinite(rawSpeed) ? rawSpeed : 0;
+
   let labelText = status || "—";
+  let displayStatus = normalizedStatus;
   if (normalizedStatus === "SHUTTLE") {
-    const parsedSpeed = Number.parseInt(speed ?? 0, 10);
-    if (Number.isFinite(parsedSpeed)) {
+    if (Number.isFinite(rawSpeed) && rawSpeed === 0) {
+      labelText = "PAUSED";
+      displayStatus = "PAUSED";
+    } else {
       labelText = `SHUTTLE ${parsedSpeed}%`;
     }
   }
@@ -1361,7 +1432,7 @@ function setStatusBadge(elementId, status, speed = null) {
   el.textContent = labelText;
   // Strip all previous status classes then apply the new one
   el.className = "status-badge";
-  if (status) el.classList.add(status.toLowerCase());
+  if (displayStatus) el.classList.add(displayStatus.toLowerCase());
 }
 
 function hasNoInputCondition(state = deviceState) {
@@ -1410,7 +1481,7 @@ function syncTransportActionButtons(state = deviceState) {
 
   const status = String(state.transport_status || "").trim().toUpperCase();
   const speed = Number.parseInt(state.transport_speed ?? 0, 10);
-  if (status === "STOPPED" || status === "PREVIEW") {
+  if (status === "STOPPED" || status === "PREVIEW" || status === "PAUSED") {
     stopBtn?.classList.add("tbtn--active-stop");
     stopBtn?.setAttribute("aria-pressed", "true");
   } else if (status === "PLAY") {
@@ -2423,15 +2494,23 @@ function handleTransportInfoResponse(kv) {
     setText("tsFormat", kv["video format"] || "—");
   }
   if (has("speed")) {
-    deviceState.transport_speed = kv.speed;
-    overlay.transport_speed = kv.speed;
+    deviceState.transport_speed = Number(kv.speed);
+    overlay.transport_speed = Number(kv.speed);
     setText("dashSpeed", formatSpeed(kv.speed));
   }
   if (has("status")) {
-    deviceState.transport_status = kv.status;
-    overlay.transport_status = kv.status;
-    setStatusBadge("tsStatus", kv.status, kv.speed);
-    setStatusBadge("dashStatus", kv.status, kv.speed);
+    // Normalize before storing so the overlay agrees with the backend's state
+    // message. Otherwise raw "shuttle" at ±5000 would override the normalized
+    // "forward"/"rewind" (and shuttle at 0 would hide "paused").
+    const normalizedStatus = normalizeTransportStatus(
+      kv.status,
+      deviceState.transport_speed,
+      deviceState.transport_status,
+    );
+    deviceState.transport_status = normalizedStatus;
+    overlay.transport_status = normalizedStatus;
+    setStatusBadge("tsStatus", normalizedStatus, deviceState.transport_speed);
+    setStatusBadge("dashStatus", normalizedStatus, deviceState.transport_speed);
   }
   if (has("timecode")) {
     deviceState.transport_timecode = kv.timecode;
@@ -2515,7 +2594,7 @@ function updateCurrentSlotMediaProgressBadge() {
   badge.textContent = `Sizes ${loaded}/${total}`;
   badge.style.display = "inline-block";
   badge.style.background = pending > 0 ? "var(--accent-amber)" : "var(--accent-green)";
-  badge.style.color = pending > 0 ? "#111" : "#fff";
+  badge.style.color = pending > 0 ? "var(--text-on-accent-inverse)" : "var(--text-on-accent)";
 }
 
 // Consume one clip info response and fold it into cache.
@@ -2545,12 +2624,93 @@ function maybeHandleClipInfoResponse(kv, fallbackName = null) {
   slotMediaPendingByName.delete(clipName);
   updateCurrentSlotMediaProgressBadge();
 
-  const changed = previous.fileSize !== next.fileSize;
-  if (changed && lastSlotMediaKv) {
+  let shouldRender = previous.fileSize !== next.fileSize;
+
+  // A freshly recorded clip is only reported once its file has been written, and
+  // that single-clip payload does not include the rest of the card's contents.
+  // If this name is not already on the current slot's list, cache the existing
+  // rows and append the new clip at the end instead of wiping the list.
+  const inCurrentList = isClipNameInSlotMediaKv(clipName);
+  const canAppend = clipInfoMatchesRenderedSlot(kv) && shouldAppendRecordedClip();
+  if (!inCurrentList && canAppend) {
+    appendRecordedClipToSlotMediaKv(clipName, kv);
+    if (recordingInProgress) {
+      recordingClipAppendedName = clipName;
+    }
+    shouldRender = true;
+  }
+
+  if (shouldRender && lastSlotMediaKv) {
     renderCurrentSlotMediaTable(lastSlotMediaKv);
   }
 
   return true;
+}
+
+// True when the given clip name already appears in the current slot's media list.
+function isClipNameInSlotMediaKv(name) {
+  if (!lastSlotMediaKv || typeof lastSlotMediaKv !== "object") {
+    return false;
+  }
+  const target = String(name || "").trim();
+  if (!target) {
+    return false;
+  }
+  for (const [key, data] of Object.entries(lastSlotMediaKv)) {
+    if (!/^\d+$/.test(key)) continue;
+    if (parseDiskListEntry(data).name === target) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The deck includes a slot id in clip info replies. Guard against appending a
+// clip that belongs to a different slot than the one currently displayed.
+function clipInfoMatchesRenderedSlot(kv) {
+  const clipSlotId = normalizeDisplayNone(kv["slot id"]);
+  if (!clipSlotId || isDisplayNoneToken(clipSlotId)) {
+    return true;
+  }
+  if (!currentSlotMediaSlotId || isDisplayNoneToken(currentSlotMediaSlotId)) {
+    return true;
+  }
+  return String(clipSlotId) === String(currentSlotMediaSlotId);
+}
+
+// Only treat unknown clip info as a new recording within a short window around
+// a recording session, so unrelated responses never mutate the media list.
+function shouldAppendRecordedClip() {
+  if (recordingInProgress) {
+    return true;
+  }
+  return recordingEndedAtMs !== 0 && Date.now() - recordingEndedAtMs < RECORDING_CLIP_SETTLE_MS;
+}
+
+// Appends a freshly recorded clip to the cached disk list snapshot, preserving
+// the files already on the card. Without this the deck's single-clip response
+// would drop every existing file from the media table.
+function appendRecordedClipToSlotMediaKv(clipName, kv) {
+  const targetSlotId = normalizeDisplayNone(kv["slot id"]) || currentSlotMediaSlotId;
+
+  if (!lastSlotMediaKv || typeof lastSlotMediaKv !== "object") {
+    lastSlotMediaKv = {};
+    if (targetSlotId && !isDisplayNoneToken(targetSlotId)) {
+      lastSlotMediaKv["slot id"] = targetSlotId;
+    }
+  }
+
+  let nextId = 1;
+  for (const key of Object.keys(lastSlotMediaKv)) {
+    if (!/^\d+$/.test(key)) continue;
+    nextId = Math.max(nextId, parseInt(key, 10) + 1);
+  }
+
+  const fileFormat = getFirstClipInfoValue(kv, ["file format"]) || "—";
+  const videoFormat = getFirstClipInfoValue(kv, ["video format"]) || "—";
+  const duration = getFirstClipInfoValue(kv, ["duration", "clip duration"]) || "—";
+  // Format a row in the same layout parseDiskListEntry understands.
+  lastSlotMediaKv[String(nextId)] = [String(clipName).trim(), fileFormat, videoFormat, duration].join(" ");
 }
 
 // Keep cache/queue state aligned with the currently visible disk list rows.
@@ -2796,17 +2956,53 @@ function parseDiskListEntry(data) {
   };
 }
 
+// Picks the key/value payload to render. Authoritative snapshots (206 replies
+// to a "disk list" command) replace the cache wholesale so deletions are
+// honored. Notify payloads (520) can carry only the just-recorded clip, and a
+// 206 can arrive before the fresh file is visible, so while we are inside the
+// recording settle window we keep the existing files on the card and simply
+// fold the new entries in at the end instead of wiping the list.
+function mergeSlotMediaKv(incomingKv, keepExisting) {
+  if (!incomingKv || !lastSlotMediaKv || typeof lastSlotMediaKv !== "object") {
+    return incomingKv;
+  }
+  if (!keepExisting && !shouldAppendRecordedClip()) {
+    return incomingKv;
+  }
+  const existingCount = Object.keys(lastSlotMediaKv)
+    .filter((key) => /^\d+$/.test(key))
+    .length;
+  const incomingCount = Object.keys(incomingKv)
+    .filter((key) => /^\d+$/.test(key))
+    .length;
+  if (incomingCount >= existingCount) {
+    return incomingKv;
+  }
+  const merged = { ...lastSlotMediaKv };
+  for (const [key, value] of Object.entries(incomingKv)) {
+    if (!/^\d+$/.test(key)) continue;
+    merged[key] = value;
+  }
+  for (const [key, value] of Object.entries(incomingKv)) {
+    if (/^\d+$/.test(key)) continue;
+    merged[key] = value;
+  }
+  return merged;
+}
+
 /**
  * Render current slot media rows from a 206/520 disk list payload.
  * The table is rendered immediately from the disk list for fast display; per-row
  * clip info requests are then enqueued one at a time to fill in file sizes as
  * responses arrive.
  */
-function renderCurrentSlotMediaTable(kv) {
+function renderCurrentSlotMediaTable(kv, options = {}) {
   const tbody = document.getElementById("currentSlotMediaTableBody");
   if (!tbody) return;
 
+  kv = mergeSlotMediaKv(kv, Boolean(options.keepExisting));
   lastSlotMediaKv = kv;
+  currentSlotMediaSlotId = normalizeDisplayNone(kv["slot id"]);
 
   const mediaEntries = Object.entries(kv)
     .filter(([key]) => /^\d+$/.test(key))
@@ -2816,7 +3012,8 @@ function renderCurrentSlotMediaTable(kv) {
     slotMediaClipNameById = new Map();
     updateTransportClipNameIndicator();
     syncSlotMediaClipInfoCache([]);
-    tbody.innerHTML = `<tr><td colspan="6" class="table-cell-empty">
+    const placeholder = recordingPlaceholderRowHtml();
+    tbody.innerHTML = placeholder || `<tr><td colspan="6" class="table-cell-empty">
       No media entries returned for current slot.</td></tr>`;
     return;
   }
@@ -2835,7 +3032,7 @@ function renderCurrentSlotMediaTable(kv) {
   }
   slotMediaClipNameById = nextSlotMediaClipNameById;
 
-  tbody.innerHTML = mediaEntries.map(([idx, data]) => {
+  const rows = mediaEntries.map(([idx, data]) => {
     const parsed = parseDiskListEntry(data);
     const clipInfo = slotMediaClipInfoByName.get(parsed.name) || {};
     const fileSize = clipInfo.fileSize || (slotMediaPendingByName.has(parsed.name) ? "..." : "—");
@@ -2848,9 +3045,11 @@ function renderCurrentSlotMediaTable(kv) {
       <td>${escapeHtml(fileSize)}</td>
     </tr>`;
   }).join("");
+  tbody.innerHTML = rows + recordingPlaceholderRowHtml();
 
   // Double-click any media row to append that clip to the timeline.
   for (const row of tbody.querySelectorAll("tr")) {
+    if (row.classList.contains("media-recording-row")) continue;
     const nameCell = row.querySelector("td:nth-child(2)");
     if (!nameCell) continue;
     const clipName = String(nameCell.textContent || "").trim();
@@ -2863,7 +3062,89 @@ function renderCurrentSlotMediaTable(kv) {
   requestSlotMediaClipInfo(mediaNames);
 }
 
-function maybeRenderCurrentSlotMediaTable(kv) {
+// Builds the "Recording in progress" placeholder row for the Media table. It
+// occupies the spot the deck will fill in with the real file name once the
+// recording finishes writing, so the list never looks like the new file is gone.
+function recordingPlaceholderRowHtml() {
+  if (!recordingInProgress || recordingClipAppendedName) {
+    return "";
+  }
+  let nextId = "";
+  if (lastSlotMediaKv && typeof lastSlotMediaKv === "object") {
+    let maxId = 0;
+    for (const key of Object.keys(lastSlotMediaKv)) {
+      if (!/^\d+$/.test(key)) continue;
+      maxId = Math.max(maxId, parseInt(key, 10));
+    }
+    if (maxId > 0) {
+      nextId = String(maxId + 1);
+    }
+  }
+  const videoFormat = escapeHtml(String(deviceState.transport_video_format || "").trim() || "—");
+  return `<tr class="media-recording-row">
+    <td>${escapeHtml(nextId || "—")}</td>
+    <td class="clip-name media-recording-name">Recording in progress</td>
+    <td>—</td>
+    <td>${videoFormat}</td>
+    <td>—</td>
+    <td>—</td>
+  </tr>`;
+}
+
+// Tracks record/stop transitions so the Media tab can show (or clear) the
+// "Recording in progress" placeholder row and remember when to accept the
+// deck's follow-up clip info as the newly recorded file.
+function syncRecordingPlaceholder(state = deviceState) {
+  const status = String(state.transport_status || "").trim().toUpperCase();
+  const nowRecording = status === "RECORD";
+  if (nowRecording === recordingInProgress) {
+    return;
+  }
+
+  recordingInProgress = nowRecording;
+  if (nowRecording) {
+    recordingEndedAtMs = 0;
+    recordingClipAppendedName = "";
+  } else {
+    recordingEndedAtMs = Date.now();
+    schedulePostRecordingMediaRefresh();
+  }
+
+  const tbody = document.getElementById("currentSlotMediaTableBody");
+  if (!tbody) {
+    return;
+  }
+  if (lastSlotMediaKv && typeof lastSlotMediaKv === "object" && Object.keys(lastSlotMediaKv).length > 0) {
+    renderCurrentSlotMediaTable(lastSlotMediaKv);
+  } else if (nowRecording) {
+    renderCurrentSlotMediaTable({});
+  }
+}
+
+// Schedules a fresh full "disk list" query shortly after recording stops. The
+// deck only reports the newly written clip in its single-clip notify, so this
+// authoritative snapshot ensures every file on the card is back in the list.
+function schedulePostRecordingMediaRefresh() {
+  if (postRecordingMediaRefreshTimeoutId !== null) {
+    clearTimeout(postRecordingMediaRefreshTimeoutId);
+  }
+  postRecordingMediaRefreshTimeoutId = setTimeout(() => {
+    postRecordingMediaRefreshTimeoutId = null;
+    if (deviceState.is_connected !== true) {
+      return;
+    }
+    loadCurrentSlotMedia();
+  }, POST_RECORDING_MEDIA_REFRESH_DELAY_MS);
+}
+
+function clearPostRecordingMediaRefresh() {
+  if (postRecordingMediaRefreshTimeoutId !== null) {
+    clearTimeout(postRecordingMediaRefreshTimeoutId);
+    postRecordingMediaRefreshTimeoutId = null;
+  }
+}
+
+function maybeRenderCurrentSlotMediaTable(kv, options = {}) {
   // Renders the slot media table only when the response targets the active slot.
   const responseSlotId = normalizeDisplayNone(kv["slot id"]);
   const activeSlotId = normalizeDisplayNone(deviceState.transport_slot_id);
@@ -2872,14 +3153,14 @@ function maybeRenderCurrentSlotMediaTable(kv) {
     // Keep Current Slot Media bound to active slot only; ignore background
     // disk notifications for non-active slots.
     if (!responseSlotId || responseSlotId === activeSlotId) {
-      renderCurrentSlotMediaTable(kv);
+      renderCurrentSlotMediaTable(kv, options);
     }
     return;
   }
 
   if (isDisplayNoneToken(deviceState.transport_slot_id)) {
     if (!responseSlotId || isDisplayNoneToken(responseSlotId)) {
-      renderCurrentSlotMediaTable(kv);
+      renderCurrentSlotMediaTable(kv, options);
     }
   }
 }

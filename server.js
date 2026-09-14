@@ -870,11 +870,17 @@ function normalizeTransportStatus(rawStatus, speed, fallbackStatus = "") {
     return "play";
   }
 
+  // A shuttle at speed 0 holds the transport at its current position. Present
+  // that as paused rather than as a motion or stopped state.
+  if (candidate === "shuttle" && normalizedSpeed === 0) {
+    return "paused";
+  }
+
   // Some decks report shuttle/transport motion state with speed 0 at timeline edges.
   // Normalize those impossible combinations back to stopped for UI consistency.
   if (
     normalizedSpeed === 0 &&
-    ["play", "forward", "rewind", "jog", "shuttle"].includes(candidate)
+    ["play", "forward", "rewind", "jog"].includes(candidate)
   ) {
     return "stopped";
   }
@@ -1497,6 +1503,7 @@ module.exports = {
   normalizeStoredConnectionPort,
   normalizeConnectionEntry,
   normalizeConfigShape,
+  normalizeTransportStatus,
   readAppConfig,
   writeAppConfig,
   readBootstrapConfig,

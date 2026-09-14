@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const {
   normalizePort,
   normalizeConfigShape,
+  normalizeTransportStatus,
   HYPERDECK_DEFAULT_PORT,
 } = require("../server.js");
 
@@ -33,4 +34,24 @@ test("normalizeConfigShape tolerates invalid stored connection port", () => {
 
   assert.equal(normalized.connections.length, 1);
   assert.equal(normalized.connections[0].port, HYPERDECK_DEFAULT_PORT);
+});
+
+test("normalizeTransportStatus maps max-speed shuttle to forward", () => {
+  assert.equal(normalizeTransportStatus("shuttle", 5000), "forward");
+});
+
+test("normalizeTransportStatus maps max-speed shuttle to rewind", () => {
+  assert.equal(normalizeTransportStatus("shuttle", -5000), "rewind");
+});
+
+test("normalizeTransportStatus maps shuttle at speed 0 to paused", () => {
+  assert.equal(normalizeTransportStatus("shuttle", 0), "paused");
+});
+
+test("normalizeTransportStatus falls back to status for a bare speed 0 update", () => {
+  assert.equal(normalizeTransportStatus(undefined, 0, "shuttle"), "paused");
+});
+
+test("normalizeTransportStatus keeps a literal stopped status as stopped", () => {
+  assert.equal(normalizeTransportStatus("stopped", 0), "stopped");
 });
