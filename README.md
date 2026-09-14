@@ -62,7 +62,7 @@ This file includes:
 MIT
 
 ## ALL TEXT BELOW THIS SECTION WAS HAND WRITTEN - Note from "author" 
-This project was written nearly entirely by GitHub Copilot; I essentially gave it the HyperDeck Ethernet Protocol document and asked it to make a full-featured controller using all of the available commands.  I spent a lot of time iterating afterwards with both CoPilot and with OpenCode's Big Pickles, bug testing and refining the interface, and it is working well enough for my own purposes.  I cannot vouch for the quality of the code itself; I suspect it could be better structured for maintainability. 
+This project was written nearly entirely by GitHub Copilot; I essentially gave it the HyperDeck Ethernet Protocol document and asked it to make a full-featured controller using all of the available commands.  I spent a lot of time iterating afterwards with both CoPilot and with OpenCode's Big Pickle, bug testing and refining the interface, and it is working well enough for my own purposes.  I cannot vouch for the quality of the code itself; I suspect it could be better structured for maintainability. 
 
 ## KNOWN ISSUES
 - When switching between card slots the Timeline is cleared and re-populated with all the clips on the card.  I believe this is a limitation of the deck itself.  It would be interesting to attempt a way to save the Timeline clips / ins and outs and have them persist, or be saved / restored from an external file.   
