@@ -65,13 +65,17 @@ MIT
 This project was written nearly entirely by GitHub Copilot; I essentially gave it the HyperDeck Ethernet Protocol document and asked it to make a full-featured controller using all of the available commands.  I spent a lot of time iterating afterwards with both CoPilot and with OpenCode's Big Pickle, bug testing and refining the interface, and it is working well enough for my own purposes.  I cannot vouch for the quality of the code itself; I suspect it could be better structured for maintainability. 
 
 ## SCREENSHOTS
+<kbd>
 <img width="909" height="760" alt="image" src="https://github.com/user-attachments/assets/6bd5042c-569d-4e04-a219-ffb276e122ee" />
-<br/>
+</kbd>
+<kbd>
 <img width="1614" height="635" alt="image" src="https://github.com/user-attachments/assets/aebd9fdd-cef2-4890-a861-722a400ceb80" />
-<br/>
+</kbd>
+<kbd>
 <img width="422" height="574" alt="image" src="https://github.com/user-attachments/assets/9fde4541-19ff-436e-ad19-42c31ecb49d5" />
+<br>
 UI is responsive and should also look good on Mobile. 
-
+</kbd>
 
 
 
