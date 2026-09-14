@@ -1,0 +1,11 @@
+services:
+  hyperdeck-vibe:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - HYPERDECK_CONFIG_PATH=/app/data/connections.json
+    volumes:
+      - hyperdeck-data:/app/data
+volumes:
+  hyperdeck-data:

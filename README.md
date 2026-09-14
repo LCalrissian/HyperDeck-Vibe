@@ -20,6 +20,31 @@ Then open your browser to:
 
 - `http://localhost:8080`
 
+## Docker
+
+Run the whole app in a container — no local Node.js install needed.
+
+Easiest, using the included Compose file:
+
+```bash
+docker compose up -d
+```
+
+Or with plain Docker:
+
+```bash
+docker build -t hyperdeck-vibe .
+docker run -d -p 8080:8080 hyperdeck-vibe
+```
+
+Then open `http://localhost:8080`.
+
+Notes on the Docker setup:
+
+- Saved connections and server settings are stored in `connections.json`. In Docker this file lives on a named volume at `/app/data/connections.json` (set via the `HYPERDECK_CONFIG_PATH` env var), so your saved decks survive container rebuilds.
+- The container serves the UI on port 8080 and reaches your HyperDeck over TCP 9993. On the default bridge network it can usually reach decks on your LAN; on Linux you can switch to `network_mode: host` in Compose if that ever fails.
+- The image runs as a non-root user, bundles only runtime dependencies (`npm ci --omit=dev --ignore-scripts`), and does not include the git pre-commit test hook.
+
 ## Basic Use
 
 1. Launch the app.
