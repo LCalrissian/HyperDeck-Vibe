@@ -64,6 +64,15 @@ MIT
 ## ALL TEXT BELOW THIS SECTION WAS HAND WRITTEN - Note from "author" 
 This project was written nearly entirely by GitHub Copilot; I essentially gave it the HyperDeck Ethernet Protocol document and asked it to make a full-featured controller using all of the available commands.  I spent a lot of time iterating afterwards with both CoPilot and with OpenCode's Big Pickle, bug testing and refining the interface, and it is working well enough for my own purposes.  I cannot vouch for the quality of the code itself; I suspect it could be better structured for maintainability. 
 
+## SCREENSHOTS
+<img width="909" height="760" alt="image" src="https://github.com/user-attachments/assets/6bd5042c-569d-4e04-a219-ffb276e122ee" />
+<img width="1614" height="635" alt="image" src="https://github.com/user-attachments/assets/aebd9fdd-cef2-4890-a861-722a400ceb80" />
+<img width="422" height="574" alt="image" src="https://github.com/user-attachments/assets/9fde4541-19ff-436e-ad19-42c31ecb49d5" />
+UI is responsive and should also look good on Mobile. 
+
+
+
+
 ## KNOWN ISSUES
 - I DID NOT CHECK THIS CODE FOR SECURITY. There is no user authentication flow.  Use on an internal network only, do not expose this to the internet!
 - When switching between card slots the Timeline is cleared and re-populated with all the clips on the card.  I believe this is a limitation of the deck itself.  It would be interesting to attempt a way to save the Timeline clips / ins and outs and have them persist, or be saved / restored from an external file.   
@@ -78,5 +87,5 @@ This project was written nearly entirely by GitHub Copilot; I essentially gave i
 ## WISHLIST
 - Add a GUI option for Theming.
 - Refactor the code in a more logical way.
-- Wishlist: Add support for connections to multiple Decks simultaneously, potentially with ability to start/stop playback in unison. 
+- Add support for connections to multiple Decks simultaneously, potentially with ability to start/stop playback in unison. 
 
