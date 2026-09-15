@@ -8,4 +8,5 @@ ENV NODE_ENV=production
 EXPOSE 8080
 RUN mkdir -p /app/data && chown -R node:node /app
 USER node
+LABEL org.opencontainers.image.source="https://github.com/LCalrissian/HyperDeck-Vibe"
 CMD ["node", "server.js"]
