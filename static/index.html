@@ -414,7 +414,7 @@
 
   <!-- ═══════════════════════════════════════════════════════
       MEDIA  – current slot media, record spill, add clips by
-                       format, external drives, format disk
+                        format, format disk
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-slots">
 
@@ -422,7 +422,6 @@
     <div class="card card--full">
       <div class="card__title-row">
         <h2 class="card__title">Current Slot Media - <span id="currentSlotMediaSlotId">—</span></h2>
-        <span class="badge" id="currentSlotMediaProgressBadge" style="display:none"></span>
       </div>
       <p class="hint">Automatically lists media files available on the currently selected slot when this tab is opened.</p>
       <p class="hint">Double-click a clip to append it to the timeline.</p>
@@ -523,21 +522,6 @@
         </div>
       </div>
       <button class="btn btn--primary btn--sm" data-action="applySlotSelect()">Select</button>
-    </div>
-
-    <!-- External Drives -->
-    <div class="card" id="mediaExternalDrivesCard">
-      <h2 class="card__title">External Drives</h2>
-      <p class="hint">Lists USB drives not yet made active. Select a drive to activate it.</p>
-      <div class="btn-row">
-        <button class="btn btn--sm" data-action="sendCmd('external drive list')">↻ List</button>
-        <button class="btn btn--sm" data-action="sendCmd('external drive selected')">Query Selected</button>
-      </div>
-      <div class="field-row u-mt-sm">
-        <label for="extDriveDevice">Device name</label>
-        <input id="extDriveDevice" type="text" placeholder="device name from list" />
-      </div>
-      <button class="btn btn--primary btn--sm" data-action="applyExtDriveSelect()">Select Drive</button>
     </div>
 
     <!-- Format Disk -->
@@ -890,12 +874,24 @@
           <label class="toggle"><input type="checkbox" id="cfgShowMediaAddFormat" checked /><span class="slider"></span></label>
         </div>
         <div class="field-row">
-          <label for="cfgShowMediaExternalDrives">Show External Drives</label>
-          <label class="toggle"><input type="checkbox" id="cfgShowMediaExternalDrives" checked /><span class="slider"></span></label>
-        </div>
-        <div class="field-row">
           <label for="cfgShowMediaFormatDisk">Show Format Disk</label>
           <label class="toggle"><input type="checkbox" id="cfgShowMediaFormatDisk" checked /><span class="slider"></span></label>
+        </div>
+      </div>
+
+      <h3 class="section-heading">NAS Tab</h3>
+      <div class="field-grid">
+        <div class="field-row">
+          <label for="cfgShowNasAddBookmark">Show Add NAS Bookmark</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowNasAddBookmark" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowNasMountShare">Show Mount NAS Share</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowNasMountShare" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowNasDiscovery">Show NAS Discovery</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowNasDiscovery" checked /><span class="slider"></span></label>
         </div>
       </div>
 
@@ -1148,26 +1144,43 @@
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-nas">
 
+    <!-- NAS Status -->
     <div class="card">
-      <h2 class="card__title">NAS Discovery &amp; Bookmarks</h2>
-      <div class="btn-row">
-        <button class="btn btn--sm" data-action="sendCmd('nas discovered')">↻ Discover (mDNS)</button>
-        <button class="btn btn--sm" data-action="sendCmd('nas list')">↻ List Bookmarks</button>
-        <button class="btn btn--sm" data-action="sendCmd('nas selected')">↻ Query Selected</button>
-        <button class="btn btn--sm btn--danger" data-action="sendCmd('nas deselect')">Deselect / Unmount</button>
-      </div>
-      <p class="hint u-mt-sm">
-        After mounting with <em>nas select</em>, query <em>slot info: device: network</em>
-        or enable slot notifications to confirm the share is mounted.
+      <h2 class="card__title">NAS Status</h2>
+      <p class="hint">
+        Status must read <em>mounted</em> before the share can be selected for recording.
+        Use <em>Select NAS as Recording Destination (Slot 3)</em> to make it the active slot, then record.
       </p>
+      <div class="btn-row">
+        <button class="btn btn--sm" data-action="sendCmd('slot info: device: network')">Query NAS</button>
+        <button class="btn btn--sm btn--primary" id="nasSelectSlotButton" data-action="sendCmd('slot select: device: network')">Select NAS as Recording Destination (Slot 3)</button>
+      </div>
+      <div id="nasSlotResult" class="result-box" hidden></div>
+    </div>
+
+    <!-- NAS Bookmarks -->
+    <div class="card">
+      <h2 class="card__title">NAS Bookmarks</h2>
+      <p class="hint">
+        Loaded from the deck when this tab opens. <strong>Set Active</strong> mounts the selected share
+        with its stored credentials; the mount is asynchronous, so the <strong>Mounted</strong> badge
+        confirms readiness before recording. <strong>Unmount</strong> unmounts the currently selected share.
+      </p>
+      <ul id="nasBookmarkList" class="nas-bookmark-list">
+        <li class="nas-bookmark-empty">No bookmarks — the list will load from the deck.</li>
+      </ul>
     </div>
 
     <!-- Add NAS bookmark -->
-    <div class="card">
+    <div class="card" id="nasAddBookmarkCard">
       <h2 class="card__title">Add NAS Bookmark
         <!-- multiline command: nas add:\n url: ...\n username: ...\n password: ... -->
       </h2>
-      <p class="hint">e.g. smb://CloudStore80.local/Studio1 &nbsp;·&nbsp; Use secure connection to avoid sending passwords as plaintext.</p>
+      <p class="hint">
+        e.g. <code>smb://CloudStore80.local/Studio1</code> — a NAS must be bookmarked before it can be
+        mounted. Enter the credentials in the bookmark if the share needs them. Credentials are stored
+        on the deck and sent in plaintext (secure mode is not yet supported).
+      </p>
       <div class="field-grid">
         <div class="field-row span-2">
           <label for="nasAddUrl">URL</label>
@@ -1185,24 +1198,16 @@
       <button class="btn btn--primary btn--sm" data-action="applyNasAdd()">Add NAS Bookmark</button>
     </div>
 
-    <!-- Remove NAS bookmark -->
-    <div class="card">
-      <h2 class="card__title">Remove NAS Bookmark
-        <!-- multiline command: nas remove:\n url: ... -->
-      </h2>
-      <div class="field-row">
-        <label for="nasRemoveUrl">URL</label>
-        <input id="nasRemoveUrl" type="text" placeholder="smb://server.local/share" />
-      </div>
-      <button class="btn btn--danger btn--sm" data-action="applyNasRemove()">Remove Bookmark</button>
-    </div>
-
     <!-- Mount NAS share -->
-    <div class="card">
+    <div class="card" id="nasMountShareCard">
       <h2 class="card__title">Mount NAS Share
         <!-- multiline command: nas select:\n url: ... -->
       </h2>
-      <p class="hint">Mounts asynchronously. Uses credentials from matching bookmark, otherwise guest.</p>
+      <p class="hint">
+        Mounts asynchronously. Credentials come from the bookmark with the matching URL —
+        add them once via <em>Add NAS Bookmark</em> above, then mount with the exact same URL.
+        Otherwise the share mounts as <em>Guest</em>. To change a bookmark's credentials, remove it and re-add.
+      </p>
       <div class="field-row">
         <label for="nasSelectUrl">URL</label>
         <input id="nasSelectUrl" type="text" placeholder="smb://server.local/share" />
@@ -1210,12 +1215,16 @@
       <button class="btn btn--primary btn--sm" data-action="applyNasSelect()">Mount Share</button>
     </div>
 
-    <!-- Slot info for NAS -->
-    <div class="card">
-      <h2 class="card__title">NAS Slot Status</h2>
-      <p class="hint">Query the <em>network</em> device slot to check mount status after <em>nas select</em>.</p>
-      <button class="btn btn--sm" data-action="sendCmd('slot info: device: network')">Query NAS Slot</button>
-      <div id="nasSlotResult" class="result-box" hidden></div>
+    <div class="card" id="nasDiscoveryCard">
+      <h2 class="card__title">NAS Discovery</h2>
+      <div class="btn-row">
+        <button class="btn btn--sm" data-action="sendCmd('nas discovered')">↻ Discover (mDNS)</button>
+      </div>
+      <p class="hint u-mt-sm">
+        Discovers NAS servers on the network via mDNS. Bookmark one with <em>Add NAS Bookmark</em>,
+        then mount it from the <em>NAS Bookmarks</em> list.
+      </p>
+      <div id="nasResult" class="result-box" hidden></div>
     </div>
 
   </div><!-- /tab-nas -->
@@ -1349,8 +1358,8 @@
       </p>
       <div class="console-output" id="consoleOutput"></div>
       <div class="console-input-row">
-        <input id="consoleInput" type="text" class="mono"
-               placeholder="Type a command and press Enter (use ↑/↓ for history)…" />
+        <textarea id="consoleInput" class="mono" rows="1"
+               placeholder="Type a command and press Enter (Shift+Enter for multi-line, ↑/↓ for history)…"></textarea>
         <button class="btn btn--primary btn--sm" data-action="sendConsoleCommand()">Send</button>
       </div>
     </div>

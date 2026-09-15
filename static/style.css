@@ -406,6 +406,8 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 .btn--primary:hover { background: var(--accent-blue-hover); }
 .btn--danger  { background: var(--accent-red);   border-color: var(--accent-red);   color: var(--text-on-accent); }
 .btn--danger:hover  { background: var(--accent-red-hover); }
+.btn--success { background: var(--accent-green); border-color: var(--accent-green); color: var(--text-on-accent); }
+.btn--success:hover { filter: brightness(.92); }
 .btn--amber   { background: var(--accent-amber); border-color: var(--accent-amber); color: var(--text-on-accent-inverse); }
 .btn--sm { padding: 3px 8px;  font-size: var(--fs-xs); }
 .btn--xs { padding: 2px 6px;  font-size: var(--fs-2xs); }
@@ -811,6 +813,17 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
   cursor: not-allowed;
 }
 
+.slot-switcher__btn--switch {
+  background: var(--bg-input);
+  border: 1px dashed color-mix(in srgb, var(--accent-amber) 55%, transparent);
+  color: var(--accent-amber);
+}
+.slot-switcher__btn--switch:hover {
+  border-color: var(--accent-amber);
+  background: color-mix(in srgb, var(--accent-amber) 12%, transparent);
+  color: var(--accent-amber);
+}
+
 .current-slot-info {
   margin-top: var(--sp-xs);
   margin-bottom: var(--sp-sm);
@@ -935,8 +948,18 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 .cl--data            { color: var(--text-secondary); padding-left: 1.8em; }
 .cl--blank           { color: var(--text-muted); font-style: italic; }
 
-.console-input-row   { display: flex; gap: var(--sp-xs); margin-top: var(--sp-xs); }
-.console-input-row input { flex: 1; }
+.console-input-row            { display: flex; gap: var(--sp-xs); margin-top: var(--sp-xs); }
+.console-input-row input,
+.console-input-row textarea    { flex: 1; }
+
+/* Console input is a textarea that auto-grows with its content (max 8 rows). */
+.console-input-row textarea {
+  resize: none;
+  overflow: hidden;
+  min-height: 1.5em;
+  max-height: 12em;
+  line-height: 1.5;
+}
 
 /* ── Result box ───────────────────────────────────────────── */
 .result-box {
@@ -946,6 +969,29 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
   overflow-y: auto; padding: var(--sp-sm) var(--sp-md);
 }
 .rk { color: var(--text-secondary); } .rv { color: var(--text-primary); }
+
+/* ── NAS bookmark list ────────────────────────────────────── */
+.nas-bookmark-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: var(--sp-xs);
+}
+.nas-bookmark-empty { color: var(--text-muted); font-size: var(--fs-sm); }
+.nas-bookmark-row {
+  display: flex; align-items: center; gap: var(--sp-sm); flex-wrap: wrap;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: var(--sp-xs) var(--sp-sm);
+}
+.nas-bookmark-url {
+  font-family: var(--font-mono); font-size: var(--fs-sm);
+  color: var(--text-primary); word-break: break-all; flex: 1; min-width: 0;
+}
+.nas-bookmark-actions { display: inline-flex; gap: var(--sp-xs); }
+.nas-chip {
+  font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; border-radius: var(--r-sm); padding: 2px 8px;
+}
+.nas-chip--selected { color: var(--accent-amber); border: 1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent); }
+.nas-chip--mounted  { color: var(--accent-green); border: 1px solid color-mix(in srgb, var(--accent-green) 45%, transparent); }
 
 /* ── Misc helpers ─────────────────────────────────────────── */
 .u-mt-sm { margin-top: var(--sp-sm) !important; }

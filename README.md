@@ -59,7 +59,7 @@ If you get `111 remote control disabled`, enable remote control on the deck and 
 - Dashboard with live device and transport status
 - Transport controls: play, stop, jog, shuttle, goto, play range
 - Clip and timeline actions
-- Slot and disk tools, including disk format flow
+- Slot and disk tools, NAS connectivity, and disk format flow
 - Configuration controls, including option to hide GUI features you may not need
 - Live console for command/response visibility
 
@@ -113,11 +113,11 @@ UI is responsive and should also look good on Mobile.
 - I DID NOT CHECK THIS CODE FOR SECURITY. There is no user authentication flow.  Use on an internal network only, do not expose this to the internet!
 - When switching between card slots the Timeline is cleared and re-populated with all the clips on the card.  I believe this is a limitation of the deck itself.  It would be interesting to attempt a way to save the Timeline clips / ins and outs and have them persist, or be saved / restored from an external file.   
 - This program was developed and tested against a HyperDeck Studio  HD Plus.  I do not have access to other HyperDeck models and this program has not yet been tested with them.
-- The NAS and SLATE tabs are completely untested!  They may not work at all.
+- The SLATE tab is completely untested!  It may not work at all.
 
 
 ## TODO
-- Test and bug fix the NAS and SLATE tabs.
+- Test and bug fix the SLATE tab.
 - Test with other HyperDeck models.
 
 ## WISHLIST

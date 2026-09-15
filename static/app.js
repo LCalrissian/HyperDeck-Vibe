@@ -96,6 +96,19 @@ const POST_RECORDING_MEDIA_REFRESH_DELAY_MS = 800;
 let pendingSpillOrderQuery = false;
 const knownSlotStates = {};
 let currentSlotSwitcherRenderKey = "";
+let lastNasBookmarks = [];
+let lastNasSelectedUrl = "";
+let lastNasMountedUrl = "";
+let nasMounted = false;
+let nasMountPollTimer = null;
+let nasMountPollAttempts = 0;
+let pendingNasResponseCommands = [];
+let externalDriveDevices = [];
+let usbDrivePresent = false;
+let activeExternalDriveKind = "";
+let pendingExternalDriveCommand = "";
+let lastSentCommandToDeck = "";
+let externalDriveListRefreshTimer = null;
 let lastRecordAttemptAtMs = 0;
 let hasTransportStateHydratedForSession = false;
 let pendingNoInputSourceLookup = false;
@@ -145,12 +158,14 @@ const uiPreferences = {
   showMediaRecordSpill: true,
   showMediaAddClip: true,
   showMediaAddFormat: true,
-  showMediaExternalDrives: true,
   showMediaFormatDisk: true,
   showTimelineTab: true,
   showMediaTab: true,
   showDeviceTab: true,
   showNasTab: true,
+  showNasAddBookmark: true,
+  showNasMountShare: true,
+  showNasDiscovery: true,
   showSlateTab: true,
   showAdvancedTab: true,
   showConsoleTab: true,
@@ -324,6 +339,19 @@ function handleServerMessage(message) {
       for (const key of Object.keys(knownSlotStates)) {
         delete knownSlotStates[key];
       }
+      lastNasBookmarks = [];
+      lastNasSelectedUrl = "";
+      lastNasMountedUrl = "";
+      nasMounted = false;
+      pendingNasResponseCommands.length = 0;
+      externalDriveDevices = [];
+      usbDrivePresent = false;
+      activeExternalDriveKind = "";
+      pendingExternalDriveCommand = "";
+      currentSlotSwitcherRenderKey = "";
+      if (nasMountPollTimer) { window.clearTimeout(nasMountPollTimer); nasMountPollTimer = null; }
+      nasMountPollAttempts = 0;
+      if (externalDriveListRefreshTimer) { window.clearTimeout(externalDriveListRefreshTimer); externalDriveListRefreshTimer = null; }
       slotMediaClipInfoByName.clear();
       slotMediaPendingByName.clear();
       queuedSlotMediaClipNames.length = 0;
@@ -336,7 +364,6 @@ function handleServerMessage(message) {
       recordingEndedAtMs = 0;
       recordingClipAppendedName = "";
       clearPostRecordingMediaRefresh();
-      updateCurrentSlotMediaProgressBadge();
       updateConnectionUI(false);
       activateTab("connections");
       stopWatchdog();
@@ -467,7 +494,6 @@ function handleParsedResponse(code, text, kv) {
     slotMediaPendingByName.delete(slotMediaClipInfoInFlightName);
     slotMediaClipInfoInFlightName = null;
     clearSlotMediaClipInfoInFlightTimeout();
-    updateCurrentSlotMediaProgressBadge();
     pumpSlotMediaClipInfoRequests();
   }
 
@@ -495,6 +521,8 @@ function handleParsedResponse(code, text, kv) {
     case 202:
     case 502:
       displayResultBox("nasSlotResult", kv);
+      trackNasMountStatus(kv);
+      trackUsbDrivePresence(kv);
       updateKnownSlotStateFromResponse(kv);
       renderCurrentSlotSwitcher(deviceState);
       renderCurrentSlotInfoSummary(deviceState);
@@ -533,6 +561,8 @@ function handleParsedResponse(code, text, kv) {
     // A notify can carry only the newly recorded clip, so we merge it into
     // the cached list rather than replacing the files already on the card.
     case 520:
+      trackExternalDriveSnapshot(kv);
+      renderCurrentSlotSwitcher(deviceState);
       maybeRenderCurrentSlotMediaTable(kv, { keepExisting: true });
       break;
 
@@ -676,17 +706,20 @@ function handleParsedResponse(code, text, kv) {
 
     // ── 224  nas list/selected ─────────────────────────────────────────
     case 224:
-      displayResultBoxFromPayload("advUtilResult", kv, text);
+      handleNasInfoResponse(kv, text);
+      displayResultBoxFromPayload("nasResult", kv, text);
       break;
 
     // ── 225  nas host info ─────────────────────────────────────────────
     case 225:
-      displayResultBox("advUtilResult", kv);
+      displayResultBox("nasResult", kv);
       break;
 
     // ── 226  external drive info ───────────────────────────────────────
     case 226:
-      displayResultBox("advUtilResult", kv);
+      trackExternalDrives(text, pendingExternalDriveCommand === "selected");
+      pendingExternalDriveCommand = "";
+      renderCurrentSlotSwitcher(deviceState);
       break;
 
     // ── 227  spill order ────────────────────────────────────────────────
@@ -735,7 +768,15 @@ function handleParsedResponse(code, text, kv) {
   // Display error responses with descriptive messages
   if (code >= 100 && code <= 199 && code !== 110) {
     const description = ERROR_CODE_DESCRIPTIONS[code] || "Error";
-    showToast(`${code} ${description}`, "error");
+    // "105 no disk" is a transient artifact when background probes race a live
+    // slot/timeline transition (e.g. a clips-get during a NAS switch), so those
+    // silent probes don't blurt an error toast.
+    const lastCmd = String(lastSentCommandToDeck || "").trim();
+    const isTransientNoDiskProbe = code === 105
+      && /^(clips get|clips rebuild|clip info|disk list|slot info|transport info|remote|configuration|commands|ping)\b/i.test(lastCmd);
+    if (!isTransientNoDiskProbe) {
+      showToast(`${code} ${description}`, "error");
+    }
   }
 }
 
@@ -1166,8 +1207,11 @@ function updateKnownSlotStateFromResponse(kv) {
     knownSlotStates[slotId].slotName = normalizeDisplayNone(kv["slot name"]);
   }
   if (kv["device name"] !== undefined || kv["device"] !== undefined) {
-    const nextDevice = kv["device name"] !== undefined ? kv["device name"] : kv["device"];
-    knownSlotStates[slotId].device = normalizeDisplayNone(nextDevice);
+    const deviceId = normalizeDisplayNone(kv["device"]);
+    // Prefer the raw protocol device token (network / usb…) over the human
+    // readable "device name" so the external-slot switcher can classify it.
+    const nextDevice = /^(?:network|none|usb)/i.test(deviceId) ? deviceId : normalizeDisplayNone(kv["device name"] || deviceId);
+    knownSlotStates[slotId].device = nextDevice;
   }
   if (kv["video format"] !== undefined) {
     knownSlotStates[slotId].videoFormat = normalizeDisplayNone(kv["video format"]);
@@ -1276,8 +1320,11 @@ function renderCurrentSlotSwitcher(state) {
     const slotState = knownSlotStates[slotId] || {};
     const status = String(slotState.status || "").toLowerCase();
     const slotName = String(slotState.slotName || "");
-    renderKeyParts.push(`${slotId}:${status}:${slotName}`);
+    const device = String(slotState.device || "").toLowerCase();
+    renderKeyParts.push(`${slotId}:${status}:${slotName}:${device}`);
   }
+  const externalSwitchActions = getExternalDriveSwitchActions(slotCount);
+  renderKeyParts.push(`ext:${externalSwitchActions.map((a) => a.kind).sort().join(",") || "none"}:${activeExternalDriveKind}`);
   const nextRenderKey = `${slotCount}|${renderKeyParts.join("|")}`;
   if (nextRenderKey === currentSlotSwitcherRenderKey) {
     renderCurrentSlotInfoSummary(state);
@@ -1285,7 +1332,7 @@ function renderCurrentSlotSwitcher(state) {
   }
   currentSlotSwitcherRenderKey = nextRenderKey;
 
-  hostEl.innerHTML = Array.from({ length: slotCount }, (_, idx) => {
+  let switcherHtml = Array.from({ length: slotCount }, (_, idx) => {
     const slotId = String(idx + 1);
     const slotState = knownSlotStates[slotId] || {};
     const status = String(slotState.status || "").toLowerCase();
@@ -1306,6 +1353,16 @@ function renderCurrentSlotSwitcher(state) {
     </button>`;
   }).join("");
 
+  for (const action of externalSwitchActions) {
+    const targetLabel = action.kind === "network" ? "NAS" : "USB";
+    switcherHtml += `<button class="slot-switcher__btn slot-switcher__btn--switch"
+      data-slot-switch="${action.kind}"
+      title="Make the external slot serve the ${targetLabel} drive">
+      Switch Slot ${action.slotId} to ${targetLabel}</button>`;
+  }
+
+  hostEl.innerHTML = switcherHtml;
+
   for (const btn of hostEl.querySelectorAll("button[data-slot-id]")) {
     btn.addEventListener("click", () => {
       const slotId = String(btn.getAttribute("data-slot-id") || "").trim();
@@ -1315,7 +1372,52 @@ function renderCurrentSlotSwitcher(state) {
     });
   }
 
+  for (const switchBtn of hostEl.querySelectorAll("button[data-slot-switch]")) {
+    switchBtn.addEventListener("click", () => {
+      const kind = String(switchBtn.getAttribute("data-slot-switch") || "").trim();
+      if (kind) chooseExternalDrive(kind);
+    });
+  }
+
   renderCurrentSlotInfoSummary(state);
+  syncNasSelectSlotButton();
+}
+
+/** Resolve which external drive kind is currently active in the external slot. */
+function resolveActiveExternalKind(slotCount) {
+  const slotDevice = String((knownSlotStates[String(slotCount)] || {}).device || "").trim().toLowerCase();
+  if (slotDevice === "network") return "network";
+  if (/^usb/i.test(slotDevice)) return "usb";
+  return activeExternalDriveKind || "";
+}
+
+/**
+ * Decide which "Switch Slot N to …" actions apply:
+ * - "Switch to USB"  when a USB drive is connected but not active in the slot.
+ * - "Switch to NAS"  when a NAS share is mounted but not active in the slot.
+ */
+function getExternalDriveSwitchActions(slotCount) {
+  const actions = [];
+  const activeKind = resolveActiveExternalKind(slotCount);
+  if (usbDrivePresent && activeKind !== "usb") {
+    actions.push({ slotId: slotCount, kind: "usb" });
+  }
+  if (nasMounted && activeKind !== "network") {
+    actions.push({ slotId: slotCount, kind: "network" });
+  }
+  return actions;
+}
+
+/** Mirror whether the NAS is already the live slot-3 destination into the NAS Status button. */
+function syncNasSelectSlotButton() {
+  const btn = document.getElementById("nasSelectSlotButton");
+  if (!btn) return;
+  const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
+  const isActive = Number.isInteger(slotCount) && slotCount >= 1
+    && resolveActiveExternalKind(slotCount) === "network";
+  btn.textContent = isActive
+    ? "NAS Selected as Recording Destination"
+    : "Select NAS as Recording Destination (Slot 3)";
 }
 
 /** Update a dashboard toggle button's label and state class. */
@@ -2006,6 +2108,19 @@ function sendCmd(command, options = {}) {
 
   const commandToSend = appendPlaybackOptionsToTransportCommand(command);
   rememberLocalTransportFromCommand(commandToSend);
+  lastSentCommandToDeck = commandToSend;
+
+  if (/^nas list$/i.test(commandToSend)) {
+    pendingNasResponseCommands.push("list");
+  } else if (/^nas selected$/i.test(commandToSend)) {
+    pendingNasResponseCommands.push("selected");
+  }
+
+  if (/^external drive list$/i.test(commandToSend)) {
+    pendingExternalDriveCommand = "list";
+  } else if (/^external drive selected$/i.test(commandToSend)) {
+    pendingExternalDriveCommand = "selected";
+  }
 
   if (!options.quiet) {
     armTransportRefreshWindow(commandToSend);
@@ -2556,47 +2671,6 @@ function getFirstClipInfoValue(kv, keys) {
 // Build the list of visible clip names from the latest disk list snapshot.
 // We reuse this in multiple places so progress math is always based on the
 // same source of truth as the table rows.
-function getCurrentSlotMediaNamesFromLastKv() {
-  if (!lastSlotMediaKv || typeof lastSlotMediaKv !== "object") {
-    return [];
-  }
-  return Object.entries(lastSlotMediaKv)
-    .filter(([key]) => /^\d+$/.test(key))
-    .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10))
-    .map(([, data]) => parseDiskListEntry(data).name)
-    .filter((name) => name && name !== "—");
-}
-
-// Update the small badge next to "Current Slot Media".
-// Yellow means "still loading some sizes" and green means "all loaded".
-function updateCurrentSlotMediaProgressBadge() {
-  const badge = document.getElementById("currentSlotMediaProgressBadge");
-  if (!badge) {
-    return;
-  }
-
-  const names = getCurrentSlotMediaNamesFromLastKv();
-  const total = names.length;
-  if (total === 0) {
-    badge.style.display = "none";
-    return;
-  }
-
-  let loaded = 0;
-  for (const name of names) {
-    const fileSize = String(slotMediaClipInfoByName.get(name)?.fileSize || "").trim();
-    if (fileSize) {
-      loaded += 1;
-    }
-  }
-
-  const pending = total - loaded;
-  badge.textContent = `Sizes ${loaded}/${total}`;
-  badge.style.display = "inline-block";
-  badge.style.background = pending > 0 ? "var(--accent-amber)" : "var(--accent-green)";
-  badge.style.color = pending > 0 ? "var(--text-on-accent-inverse)" : "var(--text-on-accent)";
-}
-
 // Consume one clip info response and fold it into cache.
 // Called only from handleParsedResponse(default), which isolates us from
 // explicit response codes like 208 transport info.
@@ -2622,7 +2696,6 @@ function maybeHandleClipInfoResponse(kv, fallbackName = null) {
 
   slotMediaClipInfoByName.set(clipName, next);
   slotMediaPendingByName.delete(clipName);
-  updateCurrentSlotMediaProgressBadge();
 
   let shouldRender = previous.fileSize !== next.fileSize;
 
@@ -2749,8 +2822,6 @@ function syncSlotMediaClipInfoCache(names) {
     slotMediaClipInfoInFlightName = null;
     clearSlotMediaClipInfoInFlightTimeout();
   }
-
-  updateCurrentSlotMediaProgressBadge();
 }
 
 // Queue runner: sends exactly one clip-info command at a time.
@@ -2767,7 +2838,6 @@ function pumpSlotMediaClipInfoRequests() {
   }
 
   slotMediaClipInfoInFlightName = nextName;
-  updateCurrentSlotMediaProgressBadge();
   clearSlotMediaClipInfoInFlightTimeout();
   slotMediaClipInfoInFlightTimeoutId = setTimeout(() => {
     if (slotMediaClipInfoInFlightName === null) {
@@ -2776,7 +2846,6 @@ function pumpSlotMediaClipInfoRequests() {
     slotMediaPendingByName.delete(slotMediaClipInfoInFlightName);
     slotMediaClipInfoInFlightName = null;
     slotMediaClipInfoInFlightTimeoutId = null;
-    updateCurrentSlotMediaProgressBadge();
     pumpSlotMediaClipInfoRequests();
   }, SLOT_MEDIA_CLIP_INFO_RESPONSE_TIMEOUT_MS);
 
@@ -2804,7 +2873,6 @@ function requestSlotMediaClipInfo(names) {
     queuedSlotMediaClipNames.push(n);
   }
 
-  updateCurrentSlotMediaProgressBadge();
   pumpSlotMediaClipInfoRequests();
 }
 
@@ -3224,13 +3292,6 @@ function applySlotSelect() {
   sendCmd(buildInlineCommand("slot select", opts));
 }
 
-/** Send an "external drive select" command. */
-function applyExtDriveSelect() {
-  const dev = document.getElementById("extDriveDevice").value.trim();
-  if (!dev) { showToast("Enter a device name", "error"); return; }
-  sendCmd(`external drive select: device: ${dev}`);
-}
-
 /**
  * Send the first step of the two-step format flow: "format: prepare".
  * The device responds with a token that must be echoed back to confirm.
@@ -3425,18 +3486,287 @@ function applyNasAdd() {
   sendCmd(lines.join("\n"));
 }
 
-/** Build and send the multiline "nas remove" command. */
-function applyNasRemove() {
-  const url = getValue("nasRemoveUrl");
-  if (!url) { showToast("Enter the NAS URL to remove", "error"); return; }
-  sendCmd(`nas remove:\n url: ${url}`);
-}
-
 /** Build and send the multiline "nas select" command. */
 function applyNasSelect() {
   const url = getValue("nasSelectUrl");
   if (!url) { showToast("Enter the NAS URL to mount", "error"); return; }
   sendCmd(`nas select:\n url: ${url}`);
+  scheduleNasMountStatusCheck();
+  scheduleNasSelectedCheck();
+}
+
+/** Extract NAS share URLs from a 224 nas info response body, deduped. */
+function extractNasUrls(text, kv) {
+  const urls = [];
+  const seen = new Set();
+  const record = (candidate) => {
+    const match = String(candidate || "").trim().match(/^(?:smb|nfs|afp):\/\/\S+$/i);
+    if (!match) return;
+    const url = match[0];
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  };
+
+  if (kv && kv["url"]) record(kv["url"]);
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const line = String(rawLine || "").trim();
+    if (!line) continue;
+    const urlKeyMatch = line.match(/^url\s*:\s*(.+)$/i);
+    if (urlKeyMatch) {
+      record(urlKeyMatch[1]);
+      continue;
+    }
+    const inlineMatch = line.match(/(?:smb|nfs|afp):\/\/\S+/i);
+    if (inlineMatch) record(inlineMatch[0]);
+  }
+  return urls;
+}
+
+/** Attribute an incoming 224 response to the nas list/selected query queue. */
+function handleNasInfoResponse(kv, text) {
+  const urls = extractNasUrls(text, kv);
+  const attribution = pendingNasResponseCommands.shift() || "";
+  if (attribution === "selected") {
+    if (urls.length > 0) lastNasSelectedUrl = urls[0];
+  } else {
+    if (urls.length > 0) lastNasBookmarks = urls;
+  }
+  renderNasBookmarkList();
+}
+
+/** Remember when the network slot reports a mounted share so chips can refresh. */
+function trackNasMountStatus(kv) {
+  const device = String(kv["device"] || "").trim().toLowerCase();
+  const status = String(kv["status"] || "").trim().toLowerCase();
+  if (device !== "network") return;
+
+  const url = String(kv["url"] || "").trim();
+  const rawSlotId = String(kv["slot id"] || "").trim();
+  let isMounted;
+  if (status === "mounted") {
+    isMounted = true;
+  } else if (status === "empty" || status === "error" || status === "blocked" || status === "blocking") {
+    isMounted = false;
+  } else if (status === "mounting") {
+    isMounted = false;
+  } else if (url && rawSlotId && rawSlotId !== "none") {
+    // Firmware doesn't always echo a status on slot-info replies. A network
+    // device pinned to a concrete slot with a URL is effectively mounted.
+    isMounted = true;
+  } else {
+    isMounted = false;
+  }
+
+  nasMounted = isMounted;
+  lastNasMountedUrl = isMounted ? url : "";
+  if (status === "mounting" && nasMountPollAttempts < 10 && !nasMountPollTimer) {
+    // Keep querying until the share settles into a definitive state.
+    nasMountPollAttempts += 1;
+    nasMountPollTimer = window.setTimeout(() => {
+      nasMountPollTimer = null;
+      sendCmd("slot info: device: network");
+    }, 2000);
+  } else if (isMounted || status === "error" || status === "empty") {
+    if (nasMountPollTimer) {
+      window.clearTimeout(nasMountPollTimer);
+      nasMountPollTimer = null;
+    }
+    if (isMounted) nasMountPollAttempts = 0;
+  }
+  renderNasBookmarkList();
+}
+
+/** Render the deck-sourced NAS bookmark list with per-row mount/remove actions. */
+function renderNasBookmarkList() {
+  const hostEl = document.getElementById("nasBookmarkList");
+  if (!hostEl) return;
+
+  if (!lastNasBookmarks || lastNasBookmarks.length === 0) {
+    hostEl.innerHTML = `<li class="nas-bookmark-empty">No bookmarks — the list will load from the deck.</li>`;
+    return;
+  }
+
+  hostEl.innerHTML = lastNasBookmarks.map((url, index) => {
+    const chips = [];
+    const isSelected = Boolean(lastNasSelectedUrl && url === lastNasSelectedUrl);
+    const isMounted = Boolean(lastNasMountedUrl && url === lastNasMountedUrl);
+    if (isSelected) {
+      chips.push(`<span class="nas-chip nas-chip--selected">Selected</span>`);
+    }
+    if (isMounted) {
+      chips.push(`<span class="nas-chip nas-chip--mounted">Mounted</span>`);
+    }
+
+    let actionsHtml = "";
+    if (!isSelected) {
+      actionsHtml += `<button type="button" class="btn btn--xs" data-action="applyNasFromBookmark(${index}, 'select')">Set Active</button>`;
+    } else if (isMounted) {
+      actionsHtml += `<button type="button" class="btn btn--xs btn--danger" data-action="nasDeselect()" title="Unmount the currently selected share">Unmount</button>`;
+    } else {
+      actionsHtml += `<button type="button" class="btn btn--xs btn--success" data-action="applyNasFromBookmark(${index}, 'select')" title="Mount the currently selected share">Mount</button>`;
+    }
+    actionsHtml += `<button type="button" class="btn btn--xs" data-action="applyNasFromBookmark(${index}, 'remove')" title="Remove this bookmark from the deck">Remove Bookmark</button>`;
+
+    return `<li class="nas-bookmark-row">
+      <span class="nas-bookmark-url" title="${escapeHtml(url)}">${escapeHtml(url)}</span>
+      ${chips.join("")}
+      <span class="nas-bookmark-actions">
+        ${actionsHtml}
+      </span>
+    </li>`;
+  }).join("");
+}
+
+/** Unmount the currently selected NAS share. */
+function nasDeselect() {
+  sendCmd("nas deselect");
+  showToast("Unmounting NAS share…", "ok");
+  scheduleNasSelectedCheck();
+}
+
+/** Mount or remove a bookmark selected from the list (index into lastNasBookmarks). */
+function applyNasFromBookmark(index, role) {
+  const bookmark = lastNasBookmarks[Number(index)];
+  if (!bookmark) return;
+  if (role === "select") {
+    const urlField = document.getElementById("nasSelectUrl");
+    if (urlField) urlField.value = bookmark;
+    sendCmd(`nas select:\n url: ${bookmark}`);
+    scheduleNasMountStatusCheck();
+    scheduleNasSelectedCheck();
+  } else if (role === "remove") {
+    if (window.confirm(`Remove NAS bookmark?\n${bookmark}`)) {
+      sendCmd(`nas remove:\n url: ${bookmark}`);
+      window.setTimeout(() => {
+        sendCmd("nas list");
+      }, 800);
+    }
+  }
+}
+
+// ============================================================
+// SECTION: External drives
+// ============================================================
+
+/** Parse device entries from a 226 external drive info response body. */
+function trackExternalDrives(text, isSelectedResponse) {
+  const devices = [];
+  const seen = new Set();
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const match = String(rawLine || "").trim().match(/^device\s*:\s*(.+)$/i);
+    if (!match) continue;
+    const token = String(match[1]).trim().replace(/^["']|["']$/g, "");
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+    devices.push({
+      token,
+      kind: /^network$/i.test(token) ? "network" : "usb",
+    });
+  }
+  if (devices.length === 0) return;
+
+  if (isSelectedResponse) {
+    // "external drive selected" returns only the active device.
+    activeExternalDriveKind = devices[0].kind;
+  } else {
+    externalDriveDevices = devices;
+    usbDrivePresent = devices.some((d) => d.kind === "usb");
+  }
+  renderCurrentSlotSwitcher(deviceState);
+}
+
+/** Track USB drive presence from unsolicited slot info (slot id: none, device: usb…). */
+function trackUsbDrivePresence(kv) {
+  const device = String(kv["device"] || "").trim().toLowerCase();
+  if (!/^usb/i.test(device)) return;
+  const status = String(kv["status"] || "").trim().toLowerCase();
+  const present = status !== "empty" && status !== "none";
+  if (present !== usbDrivePresent) {
+    usbDrivePresent = present;
+    if (present) {
+      refreshExternalDriveListSoon();
+    } else {
+      handleUsbDriveDisconnected();
+    }
+  }
+}
+
+/** Track USB presence and the active external-slot device from disk-list snapshots. */
+function trackExternalDriveSnapshot(kv) {
+  const device = String(kv["device"] || "").trim().toLowerCase();
+  const slotId = normalizeDisplayNone(kv["slot id"]);
+  if (/^usb/i.test(device)) {
+    if (!slotId || isDisplayNoneToken(slotId)) {
+      const clipCount = Number.parseInt(String(kv["clip count"] || ""), 10);
+      // A slot-id:none USB snapshot with clip count 0 accompanies a disconnect.
+      const present = !(Number.isFinite(clipCount) && clipCount === 0);
+      if (present !== usbDrivePresent) {
+        usbDrivePresent = present;
+        if (present) {
+          refreshExternalDriveListSoon();
+        } else {
+          handleUsbDriveDisconnected();
+        }
+      }
+    } else {
+      usbDrivePresent = true;
+    }
+  }
+  if (slotId && !isDisplayNoneToken(slotId)) {
+    const slotState = knownSlotStates[slotId] || (knownSlotStates[slotId] = {
+      status: "", slotName: "", device: "", videoFormat: "", recordingTime: "", blocked: "",
+    });
+    if (device) slotState.device = device;
+    if (kv["status"] !== undefined) slotState.status = String(kv["status"] || "").trim().toLowerCase();
+  }
+}
+
+/** Fall back to the NAS share when the active USB drive is removed. */
+function handleUsbDriveDisconnected() {
+  refreshExternalDriveListSoon();
+  const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
+  if (!Number.isInteger(slotCount) || slotCount < 1) return;
+  if (resolveActiveExternalKind(slotCount) !== "usb") return;
+  if (!nasMounted) return;
+  chooseExternalDrive("network");
+  showToast("USB drive removed — switching Slot 3 to NAS", "ok");
+}
+
+/** Debounced re-query of the available external drives after a presence change. */
+function refreshExternalDriveListSoon() {
+  if (externalDriveListRefreshTimer) window.clearTimeout(externalDriveListRefreshTimer);
+  externalDriveListRefreshTimer = window.setTimeout(() => {
+    externalDriveListRefreshTimer = null;
+    sendCmd("external drive list");
+  }, 800);
+}
+
+/** Query the network mount status shortly after a "nas select" ack. */
+function scheduleNasMountStatusCheck() {
+  window.setTimeout(() => {
+    sendCmd("slot info: device: network");
+  }, 1000);
+}
+
+/** Re-query "nas selected" shortly after a "nas select" so badges follow the deck. */
+function scheduleNasSelectedCheck() {
+  window.setTimeout(() => {
+    sendCmd("nas selected");
+  }, 700);
+}
+
+/** Activate the chosen external drive (usb | network) via "external drive select". */
+function chooseExternalDrive(kind) {
+  const device = externalDriveDevices.find((d) => d.kind === kind);
+  if (!device) {
+    showToast("That external drive is not currently available", "error");
+    return;
+  }
+  activeExternalDriveKind = kind;
+  sendCmd(`external drive select: device: ${device.token}`);
+  renderCurrentSlotSwitcher(deviceState);
 }
 
 // ============================================================
@@ -3503,6 +3833,14 @@ function sendConsoleCommand() {
   historyIndex = -1;
   sendCmd(cmd);
   el.value = "";
+  autoGrowConsoleInput(el);
+}
+
+/** Auto-grow the console textarea to fit its content (capped by CSS max-height). */
+function autoGrowConsoleInput(el = document.getElementById("consoleInput")) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight}px`;
 }
 
 /** Clear the console output panel. */
@@ -3540,7 +3878,7 @@ function consoleLog(text, cssClass = "cl") {
   }
 }
 
-/** Console ↑/↓ history navigation. */
+/** Console ↑/↓ history navigation, Enter to send, Shift+Enter for a newline. */
 document.addEventListener("keydown", (e) => {
   const input = document.getElementById("consoleInput");
   if (document.activeElement !== input) return;
@@ -3552,9 +3890,16 @@ document.addEventListener("keydown", (e) => {
     historyIndex = Math.max(historyIndex - 1, -1);
     input.value = historyIndex >= 0 ? commandHistory[historyIndex] : "";
     e.preventDefault();
-  } else if (e.key === "Enter") {
+  } else if (e.key === "Enter" && !e.shiftKey) {
     sendConsoleCommand();
+    e.preventDefault();
   }
+  autoGrowConsoleInput(input);
+});
+
+/** Grow the console textarea as lines are typed (Shift+Enter / paste). */
+document.getElementById("consoleInput")?.addEventListener("input", (e) => {
+  autoGrowConsoleInput(e.target);
 });
 
 // ============================================================
@@ -3761,6 +4106,13 @@ function activateTab(tabName) {
   if (tabName === "slots" && deviceState.is_connected === true) {
     loadAllSlotStates();
     loadCurrentSlotMedia();
+    sendCmd("external drive list");
+  }
+
+  if (tabName === "nas" && deviceState.is_connected === true) {
+    sendCmd("nas list");
+    sendCmd("nas selected");
+    scheduleNasMountStatusCheck();
   }
 }
 
@@ -4034,12 +4386,14 @@ function loadUiPreferences() {
       "showMediaRecordSpill",
       "showMediaAddClip",
       "showMediaAddFormat",
-      "showMediaExternalDrives",
       "showMediaFormatDisk",
       "showTimelineTab",
       "showMediaTab",
       "showDeviceTab",
       "showNasTab",
+      "showNasAddBookmark",
+      "showNasMountShare",
+      "showNasDiscovery",
       "showSlateTab",
       "showAdvancedTab",
       "showConsoleTab",
@@ -4091,7 +4445,6 @@ function applyUiPreferencesToUI() {
   setVisibility("mediaRecordSpillCard", uiPreferences.showMediaRecordSpill);
   setVisibility("mediaAddClipCard", uiPreferences.showMediaAddClip);
   setVisibility("mediaAddByFormatCard", uiPreferences.showMediaAddFormat);
-  setVisibility("mediaExternalDrivesCard", uiPreferences.showMediaExternalDrives);
   setVisibility("mediaFormatDiskCard", uiPreferences.showMediaFormatDisk);
 
   setCheckbox("cfgShowTimelineAddClip", uiPreferences.showTimelineAddClip);
@@ -4099,8 +4452,13 @@ function applyUiPreferencesToUI() {
   setCheckbox("cfgShowMediaRecordSpill", uiPreferences.showMediaRecordSpill);
   setCheckbox("cfgShowMediaAddClip", uiPreferences.showMediaAddClip);
   setCheckbox("cfgShowMediaAddFormat", uiPreferences.showMediaAddFormat);
-  setCheckbox("cfgShowMediaExternalDrives", uiPreferences.showMediaExternalDrives);
   setCheckbox("cfgShowMediaFormatDisk", uiPreferences.showMediaFormatDisk);
+  setVisibility("nasAddBookmarkCard", uiPreferences.showNasAddBookmark);
+  setVisibility("nasMountShareCard", uiPreferences.showNasMountShare);
+  setVisibility("nasDiscoveryCard", uiPreferences.showNasDiscovery);
+  setCheckbox("cfgShowNasAddBookmark", uiPreferences.showNasAddBookmark);
+  setCheckbox("cfgShowNasMountShare", uiPreferences.showNasMountShare);
+  setCheckbox("cfgShowNasDiscovery", uiPreferences.showNasDiscovery);
   applyTabVisibilityPreferences();
 
   if (dynRangeCell) {
@@ -4231,8 +4589,13 @@ const TIMELINE_MEDIA_PREF_TOGGLES = {
   cfgShowMediaRecordSpill: "showMediaRecordSpill",
   cfgShowMediaAddClip: "showMediaAddClip",
   cfgShowMediaAddFormat: "showMediaAddFormat",
-  cfgShowMediaExternalDrives: "showMediaExternalDrives",
   cfgShowMediaFormatDisk: "showMediaFormatDisk",
+};
+
+const NAS_CARDS_PREF_TOGGLES = {
+  cfgShowNasAddBookmark: "showNasAddBookmark",
+  cfgShowNasMountShare: "showNasMountShare",
+  cfgShowNasDiscovery: "showNasDiscovery",
 };
 
 const TAB_VISIBILITY_PREF_TOGGLES = {
@@ -4267,6 +4630,11 @@ function onCfgShowTransportSectionsToggleChange() {
 function onCfgShowTimelineMediaToggleChange() {
   // Saves and applies Timeline/Media tab visibility preferences.
   handlePreferenceToggleChange(TIMELINE_MEDIA_PREF_TOGGLES);
+}
+
+function onCfgShowNasCardsToggleChange() {
+  // Saves and applies NAS card visibility preferences.
+  handlePreferenceToggleChange(NAS_CARDS_PREF_TOGGLES);
 }
 
 function onCfgShowTabVisibilityChange() {
@@ -4384,14 +4752,13 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "applyClipsRebuild",
   "applyConfiguration",
   "applyDynamicRange",
-  "applyExtDriveSelect",
   "applyFormatConfirm",
   "applyFormatPrepare",
   "applyGoto",
   "applyIdentify",
   "applyNasAdd",
-  "applyNasRemove",
   "applyNasSelect",
+  "nasDeselect",
   "applyPlay",
   "applyPlayOnStartup",
   "applyPlayOption",
@@ -4407,6 +4774,8 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "applySlateProject",
   "applySlotSelect",
   "applyWatchdog",
+  "applyNasFromBookmark",
+  "chooseExternalDrive",
   "clearConsole",
   "confirmClipsClear",
   "confirmReboot",
@@ -4580,12 +4949,14 @@ const PREF_TOGGLE_LISTENERS = {
   cfgShowMediaRecordSpill: onCfgShowTimelineMediaToggleChange,
   cfgShowMediaAddClip: onCfgShowTimelineMediaToggleChange,
   cfgShowMediaAddFormat: onCfgShowTimelineMediaToggleChange,
-  cfgShowMediaExternalDrives: onCfgShowTimelineMediaToggleChange,
   cfgShowMediaFormatDisk: onCfgShowTimelineMediaToggleChange,
   cfgShowTimelineTab: onCfgShowTabVisibilityChange,
   cfgShowMediaTab: onCfgShowTabVisibilityChange,
   cfgShowDeviceTab: onCfgShowTabVisibilityChange,
   cfgShowNasTab: onCfgShowTabVisibilityChange,
+  cfgShowNasAddBookmark: onCfgShowNasCardsToggleChange,
+  cfgShowNasMountShare: onCfgShowNasCardsToggleChange,
+  cfgShowNasDiscovery: onCfgShowNasCardsToggleChange,
   cfgShowSlateTab: onCfgShowTabVisibilityChange,
   cfgShowAdvancedTab: onCfgShowTabVisibilityChange,
   cfgShowConsoleTab: onCfgShowTabVisibilityChange,
