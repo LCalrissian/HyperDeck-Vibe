@@ -4,13 +4,31 @@ HyperDeck Vibe is a web controller for Blackmagic HyperDeck recorders.
 
 It gives you a browser-based control surface for transport, clips, slots, disk actions, configuration, and live status.
 
+## SCREENSHOTS
+<kbd>
+<img width="909" height="760" alt="image" src="https://github.com/user-attachments/assets/6bd5042c-569d-4e04-a219-ffb276e122ee" />
+</kbd><br/><br/>
+
+
+<kbd>
+<img width="1614" height="635" alt="image" src="https://github.com/user-attachments/assets/aebd9fdd-cef2-4890-a861-722a400ceb80" />
+</kbd><br/><br/>
+
+
+<kbd>
+<img width="422" height="574" alt="image" src="https://github.com/user-attachments/assets/9fde4541-19ff-436e-ad19-42c31ecb49d5" />
+</kbd><br/><br/>
+
+UI is responsive and should also look good on Mobile. 
+
 ## What You Need
 
-- Node.js 18 or newer
+- Node.js 18 or newer, or Docker
 - A HyperDeck on your network with remote control enabled
 
-## Quick Start
+## Native Install
 
+Unzip into a folder
 ```bash
 npm install
 npm start
@@ -88,26 +106,6 @@ MIT
 
 ## ALL TEXT BELOW THIS SECTION WAS HAND WRITTEN - Note from "author" 
 This project was written nearly entirely by GitHub Copilot; I essentially gave it the HyperDeck Ethernet Protocol document and asked it to make a full-featured controller using all of the available commands.  I spent a lot of time iterating afterwards with both CoPilot and with OpenCode's Big Pickle, bug testing and refining the interface, and it is working well enough for my own purposes.  I cannot vouch for the quality of the code itself; I suspect it could be better structured for maintainability. 
-
-## SCREENSHOTS
-<kbd>
-<img width="909" height="760" alt="image" src="https://github.com/user-attachments/assets/6bd5042c-569d-4e04-a219-ffb276e122ee" />
-</kbd><br/><br/>
-
-
-<kbd>
-<img width="1614" height="635" alt="image" src="https://github.com/user-attachments/assets/aebd9fdd-cef2-4890-a861-722a400ceb80" />
-</kbd><br/><br/>
-
-
-<kbd>
-<img width="422" height="574" alt="image" src="https://github.com/user-attachments/assets/9fde4541-19ff-436e-ad19-42c31ecb49d5" />
-</kbd><br/><br/>
-
-UI is responsive and should also look good on Mobile. 
-  
-
-
 
 ## KNOWN ISSUES
 - I DID NOT CHECK THIS CODE FOR SECURITY. There is no user authentication flow.  Use on an internal network only, do not expose this to the internet!
