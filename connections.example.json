@@ -1,0 +1,15 @@
+{
+  "server": {
+    "bind_host": "0.0.0.0",
+    "port": 8080
+  },
+  "connections": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "Example HyperDeck",
+      "host": "192.0.2.10",
+      "port": 9993,
+      "model": "HyperDeck Studio HD Plus"
+    }
+  ]
+}
