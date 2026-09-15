@@ -1,6 +1,6 @@
 services:
   hyperdeck-vibe:
-    build: .
+    image: ghcr.io/lcalrissian/hyperdeck-vibe:latest
     ports:
       - "8080:8080"
     environment:
