@@ -473,6 +473,8 @@ class HyperDeckController {
         host: this.state.host,
         port: this.state.port,
       });
+    } else {
+      this.broadcaster.sendTo(ws, { type: "disconnected" });
     }
   }
 
@@ -1216,6 +1218,113 @@ async function primeDeviceState() {
   }
 }
 
+const HYPERDECK_WEB_PORT = 80;
+const HYPERDECK_WEB_TIMEOUT_MS = 120000;
+let filesWebPort = HYPERDECK_WEB_PORT;
+
+function setFilesWebPort(value) {
+  filesWebPort = value;
+}
+
+function getConnectedDeckHost() {
+  return state.is_connected ? state.host : "";
+}
+
+function requireConnectedDeckHost() {
+  const host = getConnectedDeckHost();
+  if (!host) {
+    const err = new Error("Not connected to a HyperDeck");
+    err.statusCode = 400;
+    throw err;
+  }
+  return host;
+}
+
+function normalizeFilesPath(raw) {
+  const value = String(raw || "").trim();
+  if (!value) {
+    const err = new Error("Path is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (value.split("/").some((segment) => segment === "..")) {
+    const err = new Error("Invalid path");
+    err.statusCode = 400;
+    throw err;
+  }
+  return value.startsWith("/") ? value : `/${value}`;
+}
+
+function buildDeckMountUrl(relPath) {
+  return `/mounts${normalizeFilesPath(relPath)}`;
+}
+
+function bufferDeckResponse(response) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.on("end", () => {
+      resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: Buffer.concat(chunks),
+      });
+    });
+    response.on("error", reject);
+  });
+}
+
+function deckWebRequest(host, port, method, pathAndQuery, options = {}) {
+  const { headers = {}, body } = options;
+  return new Promise((resolve, reject) => {
+    const request = http.request({ host, port, method, path: pathAndQuery, headers });
+    request.setTimeout(HYPERDECK_WEB_TIMEOUT_MS, () => {
+      request.destroy(new Error("Deck web request timed out"));
+    });
+    request.on("response", (response) => resolve(bufferDeckResponse(response)));
+    request.on("error", reject);
+    if (body && typeof body.pipe === "function") {
+      body.pipe(request);
+    } else {
+      request.end(body);
+    }
+  });
+}
+
+async function deckFilesList(host, relPath, port = HYPERDECK_WEB_PORT) {
+  const response = await deckWebRequest(host, port, "GET", buildDeckMountUrl(relPath));
+  let entries = [];
+  try {
+    entries = JSON.parse(response.body.toString("utf8"));
+  } catch {
+    entries = [];
+  }
+  return {
+    ok: response.status >= 200 && response.status < 300,
+    status: response.status,
+    detail: response.body.toString("utf8"),
+    entries,
+  };
+}
+
+async function deckFilesMkdir(host, relPath, port = HYPERDECK_WEB_PORT) {
+  const response = await deckWebRequest(host, port, "MKCOL", buildDeckMountUrl(relPath));
+  return {
+    ok: response.status >= 200 && response.status < 300,
+    status: response.status,
+    detail: response.body.toString("utf8"),
+  };
+}
+
+async function deckFilesDelete(host, relPath, port = HYPERDECK_WEB_PORT) {
+  const response = await deckWebRequest(host, port, "DELETE", buildDeckMountUrl(relPath));
+  return {
+    ok: response.status === 200 || response.status === 204,
+    status: response.status,
+    detail: response.body.toString("utf8"),
+  };
+}
+
 const app = express();
 const staticDir = path.join(__dirname, "static");
 
@@ -1402,6 +1511,143 @@ app.patch("/api/connections/model", async (req, res, next) => {
   }
 });
 
+app.get("/api/files/list", async (req, res, next) => {
+  try {
+    const host = requireConnectedDeckHost();
+    const result = await deckFilesList(host, normalizeFilesPath(req.query.path), filesWebPort);
+    if (!result.ok) {
+      res.status(result.status || 502).json({ ok: false, detail: result.detail });
+      return;
+    }
+    res.json({ ok: true, entries: result.entries });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/files/mkdir", async (req, res, next) => {
+  try {
+    const host = requireConnectedDeckHost();
+    const result = await deckFilesMkdir(host, normalizeFilesPath(req.query.path), filesWebPort);
+    if (!result.ok) {
+      res.status(result.status || 502).json({ ok: false, detail: result.detail });
+      return;
+    }
+    res.json({ ok: true, status: result.status });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/files/delete", async (req, res, next) => {
+  try {
+    const host = requireConnectedDeckHost();
+    const result = await deckFilesDelete(host, normalizeFilesPath(req.query.path), filesWebPort);
+    if (!result.ok) {
+      res.status(result.status || 502).json({ ok: false, detail: result.detail });
+      return;
+    }
+    res.json({ ok: true, status: result.status });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/files/download", async (req, res, next) => {
+  const host = requireConnectedDeckHost();
+  const relPath = normalizeFilesPath(req.query.path);
+  const filename = relPath.split("/").filter(Boolean).pop() || "download";
+  const deckRequest = http.request({
+    host,
+    port: filesWebPort,
+    method: "GET",
+    path: buildDeckMountUrl(relPath),
+  });
+  deckRequest.setTimeout(HYPERDECK_WEB_TIMEOUT_MS, () => {
+    deckRequest.destroy(new Error("Deck web request timed out"));
+  });
+  deckRequest.on("error", (error) => {
+    if (!res.headersSent) {
+      res.status(502).json({ ok: false, detail: error.message });
+    } else {
+      res.destroy();
+    }
+  });
+  deckRequest.on("response", (deckResponse) => {
+    if (deckResponse.statusCode !== 200) {
+      let text = "";
+      deckResponse.on("data", (chunk) => {
+        if (text.length < 8192) {
+          text += chunk.toString("utf8");
+        }
+      });
+      deckResponse.on("end", () => {
+        res.status(deckResponse.statusCode).json({
+          ok: false,
+          detail: text || `Deck returned ${deckResponse.statusCode}`,
+        });
+      });
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": deckResponse.headers["content-type"] || "application/octet-stream",
+      "Content-Length": deckResponse.headers["content-length"],
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    });
+    deckResponse.on("error", () => res.destroy());
+    deckResponse.pipe(res);
+  });
+  deckRequest.end();
+});
+
+app.put("/api/files/upload", async (req, res, next) => {
+  const host = requireConnectedDeckHost();
+  const relPath = normalizeFilesPath(req.query.path);
+  const contentLength = Number(req.headers["content-length"]);
+  const deckHeaders = {
+    "Content-Type": req.headers["content-type"] || "application/octet-stream",
+  };
+  if (Number.isFinite(contentLength) && contentLength > 0) {
+    deckHeaders["Content-Length"] = contentLength;
+  }
+  const deckRequest = http.request({
+    host,
+    port: filesWebPort,
+    method: "PUT",
+    path: buildDeckMountUrl(relPath),
+    headers: deckHeaders,
+  });
+  deckRequest.setTimeout(HYPERDECK_WEB_TIMEOUT_MS, () => {
+    deckRequest.destroy(new Error("Deck web request timed out"));
+  });
+  deckRequest.on("error", (error) => {
+    req.unpipe(deckRequest);
+    if (!res.headersSent) {
+      res.status(502).json({ ok: false, detail: error.message });
+    } else {
+      res.destroy();
+    }
+  });
+  deckRequest.on("response", (deckResponse) => {
+    let text = "";
+    deckResponse.on("data", (chunk) => {
+      if (text.length < 8192) {
+        text += chunk.toString("utf8");
+      }
+    });
+    deckResponse.on("end", () => {
+      const ok = deckResponse.statusCode >= 200 && deckResponse.statusCode < 300;
+      res.status(deckResponse.statusCode).json({
+        ok,
+        status: deckResponse.statusCode,
+        detail: text,
+      });
+    });
+  });
+  req.pipe(deckRequest);
+  req.on("error", () => deckRequest.destroy());
+});
+
 app.use((error, _req, res, _next) => {
   // Central error handler that returns {detail} with the response status.
   const statusCode = Number.isInteger(error?.statusCode) ? error.statusCode : 500;
@@ -1507,6 +1753,17 @@ module.exports = {
   readAppConfig,
   writeAppConfig,
   readBootstrapConfig,
+  state,
+  HYPERDECK_WEB_PORT,
+  setFilesWebPort,
+  getConnectedDeckHost,
+  requireConnectedDeckHost,
+  normalizeFilesPath,
+  buildDeckMountUrl,
+  deckWebRequest,
+  deckFilesList,
+  deckFilesMkdir,
+  deckFilesDelete,
   app,
   server,
   startServer,

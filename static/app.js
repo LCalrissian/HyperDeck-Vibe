@@ -71,6 +71,16 @@ let lastTimelineClipsKv = null;
 let timelineClipNameById = new Map();
 let slotMediaClipNameById = new Map();
 
+// Timeline-modification tracking: the deck rebuilds its timeline from the card
+// contents whenever the active slot changes, wiping manual edits. We compare the
+// deck's current clip list against the files actually on the card (web file
+// listing, with a TCP disk-list fallback) to detect when the timeline has been
+// changed by hand, so the UI can warn before a slot switch clears it.
+let timelineBaselineSlotId = "";
+let timelineBaselineNames = null;
+let timelineBaselineFetchedAtMs = 0;
+const TIMELINE_BASELINE_TTL_MS = 3_000;
+
 // Slot media file-size hydration architecture:
 // 1) lastSlotMediaKv stores the most recent 206/520 disk list snapshot.
 // 2) slotMediaClipInfoByName caches file sizes by clip name.
@@ -79,6 +89,7 @@ let slotMediaClipNameById = new Map();
 // This separation lets us render rows immediately, then fill file sizes as
 // clip info replies arrive, without blocking the UI.
 let lastSlotMediaKv = null;
+let lastNasMediaKv = null;
 const slotMediaClipInfoByName = new Map();
 const slotMediaPendingByName = new Set();
 const queuedSlotMediaClipNames = [];
@@ -154,11 +165,13 @@ const uiPreferences = {
   showTransportSingleClip: true,
   pinTransportToDashboard: false,
   showTimelineAddClip: true,
+  showMediaBrowser: true,
   showMediaSlotInfo: true,
   showMediaRecordSpill: true,
   showMediaAddClip: true,
   showMediaAddFormat: true,
   showMediaFormatDisk: true,
+  showSlotSwitchWarning: true,
   showTimelineTab: true,
   showMediaTab: true,
   showDeviceTab: true,
@@ -359,11 +372,13 @@ function handleServerMessage(message) {
       clearSlotMediaClipInfoInFlightTimeout();
       lastSlotMediaNamesKey = "";
       lastSlotMediaKv = null;
+      lastNasMediaKv = null;
       currentSlotMediaSlotId = "";
       recordingInProgress = false;
       recordingEndedAtMs = 0;
       recordingClipAppendedName = "";
       clearPostRecordingMediaRefresh();
+      filesResetOnDisconnect();
       updateConnectionUI(false);
       activateTab("connections");
       stopWatchdog();
@@ -536,6 +551,8 @@ function handleParsedResponse(code, text, kv) {
     case 205:
       lastTimelineClipsKv = kv;
       renderClipsTable(kv);
+      timelineClipSnapshotArrived();
+      renderNasMediaBrowser();
       break;
 
     case 519:
@@ -546,6 +563,8 @@ function handleParsedResponse(code, text, kv) {
         lastTimelineClipsKv = kv;
         renderClipsTable(kv);
       }
+      timelineClipSnapshotArrived();
+      renderNasMediaBrowser();
       // Snapshot responses can omit accurate durations, so refresh them once.
       if (String(kv["update type"] || "").trim().toLowerCase() === "snapshot") {
         applyClipsGet();
@@ -906,11 +925,7 @@ function applyStateToUI(state) {
     updateTransportClipNameIndicator(state);
   }
   setText("dashSlotId",     formatSlot(state));
-  const mediaSlotId = normalizeDisplayNone(state.transport_slot_id);
-  const mediaSlotLabel = isDisplayNoneToken(mediaSlotId)
-    ? "None"
-    : (mediaSlotId ? `Slot ${mediaSlotId}` : "—");
-  setText("currentSlotMediaSlotId", state.is_connected === true ? mediaSlotLabel : "—");
+  updateSlotMediaHeader();
   setText("dashSlotName",   state.transport_slot_name       || "—");
   setText("dashDevName",    state.transport_device_name     || "—");
   setText("dashVidFmt",     state.transport_video_format    || "—");
@@ -1098,12 +1113,14 @@ function maybeRefreshTimelineClipsAfterSlotChange(state) {
 
   lastObservedTimelineSlotId = currentSlotId;
 
-  const clipsTab = document.getElementById("tab-clips");
-  const clipsTabIsActive = Boolean(clipsTab?.classList.contains("active"));
-  if (!clipsTabIsActive || state.is_connected !== true) {
+  if (state.is_connected !== true) {
     return;
   }
 
+  // Refresh the timeline manifest and its card-content baseline on every
+  // slot change, whether or not the Clips tab is open, so the timeline-modify
+  // warning reflects the newly active slot. Clips get is cheap and read-only.
+  refreshTimelineBaseline();
   applyClipsGet();
 }
 
@@ -1129,8 +1146,32 @@ function formatSlotInfoBlocked(value) {
   return raw;
 }
 
+// Reflects the ACTIVE slot (not the browsed one) in the "Active Recording Slot"
+// card title, e.g. "ACTIVE RECORDING SLOT - SLOT 1 (UNTITLED-SD1)".
+function renderActiveRecordingSlotTitle(state = deviceState) {
+  const el = document.getElementById("activeRecordingSlotTitle");
+  if (!el) return;
+  if (state?.is_connected !== true) {
+    el.textContent = "—";
+    return;
+  }
+  const activeSlot = normalizeDisplayNone(state.transport_slot_id);
+  if (!activeSlot || isDisplayNoneToken(activeSlot)) {
+    el.textContent = "—";
+    return;
+  }
+  const slotInfo = knownSlotStates[String(activeSlot).trim()] || {};
+  const slotName = String(slotInfo.slotName || "").trim();
+  const deviceLabel = String(slotInfo.device || "").trim();
+  const suffix = slotName || (deviceLabel && deviceLabel !== "none" ? deviceLabel : "");
+  el.textContent = suffix
+    ? `SLOT ${activeSlot} (${suffix})`
+    : `SLOT ${activeSlot}`;
+}
+
 function renderCurrentSlotInfoSummary(state = deviceState) {
   // Renders the current slot summary card, exposing an unblock action when blocked.
+  renderActiveRecordingSlotTitle(state);
   const activeSlot = normalizeDisplayNone(state?.transport_slot_id);
   const slotKey = (!activeSlot || isDisplayNoneToken(activeSlot)) ? "" : String(activeSlot).trim();
   const slotInfo = slotKey ? (knownSlotStates[slotKey] || {}) : {};
@@ -1355,7 +1396,7 @@ function renderCurrentSlotSwitcher(state) {
 
   for (const action of externalSwitchActions) {
     const targetLabel = action.kind === "network" ? "NAS" : "USB";
-    switcherHtml += `<button class="slot-switcher__btn slot-switcher__btn--switch"
+    switcherHtml += `<button class="slot-switcher__btn"
       data-slot-switch="${action.kind}"
       title="Make the external slot serve the ${targetLabel} drive">
       Switch Slot ${action.slotId} to ${targetLabel}</button>`;
@@ -1367,8 +1408,13 @@ function renderCurrentSlotSwitcher(state) {
     btn.addEventListener("click", () => {
       const slotId = String(btn.getAttribute("data-slot-id") || "").trim();
       if (!slotId || btn.disabled) return;
+      const currentActive = normalizeDisplayNone(deviceState.transport_slot_id);
+      if (!(currentActive && String(currentActive) === slotId) && !confirmSlotSwitchClearsTimeline(`Slot ${slotId}`)) {
+        return;
+      }
       sendCmd(`slot select: slot id: ${slotId}`);
       showToast(`Selecting slot ${slotId}…`, "ok");
+      filesJumpToSlot(slotId);
     });
   }
 
@@ -1381,6 +1427,7 @@ function renderCurrentSlotSwitcher(state) {
 
   renderCurrentSlotInfoSummary(state);
   syncNasSelectSlotButton();
+  renderFilesSlotButtons();
 }
 
 /** Resolve which external drive kind is currently active in the external slot. */
@@ -1388,6 +1435,21 @@ function resolveActiveExternalKind(slotCount) {
   const slotDevice = String((knownSlotStates[String(slotCount)] || {}).device || "").trim().toLowerCase();
   if (slotDevice === "network") return "network";
   if (/^usb/i.test(slotDevice)) return "usb";
+
+  // 208/508 transport info carries the active slot's device but is never folded
+  // into knownSlotStates (only 202/520 are), so the slot-info cache can stay
+  // empty right after the deck switches to the external slot. Fall back to the
+  // live transport device whenever it currently belongs to the external slot,
+  // otherwise selecting NAS via the switcher or the NAS tab would leave the
+  // Media Browser believing no external kind is active and never enter NAS
+  // browse mode.
+  const activeSlot = normalizeDisplayNone(deviceState.transport_slot_id);
+  if (activeSlot && String(activeSlot) === String(slotCount)) {
+    const transportDevice = String(deviceState.transport_device_name || "").trim().toLowerCase();
+    if (/^network/i.test(transportDevice)) return "network";
+    if (/^usb/i.test(transportDevice)) return "usb";
+  }
+
   return activeExternalDriveKind || "";
 }
 
@@ -2562,6 +2624,98 @@ function mergeTimelineClipAdd(previous, update) {
   return merged;
 }
 
+// ── Timeline-modification detection ─────────────────────────────────
+// The deck's default timeline for a card is "all clips on the card". Any
+// deviation (extra, missing, or renamed entries) means the user edited the
+// timeline by hand. Comparing against the web file listing of the active
+// slot's mount root (TCP disk list as fallback) lets us warn before a slot
+// switch discards those edits.
+
+function timelineClipNamesFromKv(kv) {
+  // Mirrors renderClipsTable parsing to produce the ordered clip names.
+  if (!kv || typeof kv !== "object") return [];
+  const entries = Object.entries(kv)
+    .filter(([key]) => /^\d+$/.test(key))
+    .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10));
+  const payloadLooksV2 = entries.some(([, data]) => looksLikeV2ClipEntry(data));
+  const isV2 = payloadLooksV2 || entries.length === 0;
+  const names = [];
+  for (const [, data] of entries) {
+    const { name } = parseTimelineClipEntry(data, isV2);
+    if (name && name !== "—") names.push(name);
+  }
+  return names;
+}
+
+function sameNameSets(a, b) {
+  const toSet = (arr) => {
+    const set = new Set();
+    for (const item of (arr || [])) set.add(String(item));
+    return set;
+  };
+  const setA = toSet(a);
+  const setB = toSet(b);
+  if (setA.size !== setB.size) return false;
+  for (const name of setA) {
+    if (!setB.has(name)) return false;
+  }
+  return true;
+}
+
+function timelineIsModified(kv = lastTimelineClipsKv) {
+  // True when the deck's current timeline differs from the files on the card.
+  if (!timelineBaselineNames || !kv) return false;
+  return !sameNameSets(timelineClipNamesFromKv(kv), timelineBaselineNames);
+}
+
+async function refreshTimelineBaseline() {
+  // Computes the "card contents" clip-name baseline for the active slot from
+  // the web file listing, falling back to the TCP disk list when HTTP is down.
+  // Refreshing is throttled so per-clips-get calls don't hammer the web API.
+  const activeSlotId = normalizeDisplayNone(deviceState.transport_slot_id);
+  if (!activeSlotId || isDisplayNoneToken(activeSlotId)) {
+    timelineBaselineSlotId = "";
+    timelineBaselineNames = null;
+    return;
+  }
+  if (timelineBaselineSlotId === activeSlotId && Date.now() - timelineBaselineFetchedAtMs < TIMELINE_BASELINE_TTL_MS) {
+    return;
+  }
+  timelineBaselineSlotId = activeSlotId;
+  timelineBaselineFetchedAtMs = Date.now();
+
+  let names = null;
+  const mount = filesSlotMountForId(activeSlotId);
+  if (mount) {
+    const entries = await filesFetchList(filesJoinPath("/", mount.name));
+    if (Array.isArray(entries)) {
+      // Only video files belong on the deck's clip list, so ignore stray
+      // non-media files that would otherwise look like timeline edits.
+      names = entries
+        .filter((entry) => entry.type === "file" && /\.(mp4|mov|mxf|avi|mkv)$/i.test(String(entry.name || "")))
+        .map((entry) => String(entry.name));
+    }
+  }
+  if (!names) {
+    names = Array.from(buildSlotMediaDiskMap().keys());
+  }
+  timelineBaselineNames = names && names.length > 0 ? names : null;
+}
+
+function timelineClipSnapshotArrived() {
+  // Runs when a 205/519 clips info snapshot lands so the card-content baseline
+  // reflects the current slot. The modified check itself is computed on demand.
+  refreshTimelineBaseline();
+}
+
+function confirmSlotSwitchClearsTimeline(slotLabel) {
+  // Returns true when the caller may proceed to switch the active slot.
+  if (uiPreferences.showSlotSwitchWarning === false) return true;
+  return confirm(
+    "Changing active slots will rebuild the Timeline; you will lose any Timeline edits. Proceed?"
+  );
+}
+
 function parseClipId(value) {
   // Parses a clip id string to a non-negative integer, or null when invalid.
   const parsed = Number.parseInt(String(value || "").trim(), 10);
@@ -2713,8 +2867,8 @@ function maybeHandleClipInfoResponse(kv, fallbackName = null) {
     shouldRender = true;
   }
 
-  if (shouldRender && lastSlotMediaKv) {
-    renderCurrentSlotMediaTable(lastSlotMediaKv);
+  if (shouldRender) {
+    rerenderSlotMediaTable();
   }
 
   return true;
@@ -3030,14 +3184,14 @@ function parseDiskListEntry(data) {
 // 206 can arrive before the fresh file is visible, so while we are inside the
 // recording settle window we keep the existing files on the card and simply
 // fold the new entries in at the end instead of wiping the list.
-function mergeSlotMediaKv(incomingKv, keepExisting) {
-  if (!incomingKv || !lastSlotMediaKv || typeof lastSlotMediaKv !== "object") {
+function mergeSlotMediaKv(incomingKv, keepExisting, baseKv = lastSlotMediaKv) {
+  if (!incomingKv || !baseKv || typeof baseKv !== "object") {
     return incomingKv;
   }
   if (!keepExisting && !shouldAppendRecordedClip()) {
     return incomingKv;
   }
-  const existingCount = Object.keys(lastSlotMediaKv)
+  const existingCount = Object.keys(baseKv)
     .filter((key) => /^\d+$/.test(key))
     .length;
   const incomingCount = Object.keys(incomingKv)
@@ -3046,7 +3200,7 @@ function mergeSlotMediaKv(incomingKv, keepExisting) {
   if (incomingCount >= existingCount) {
     return incomingKv;
   }
-  const merged = { ...lastSlotMediaKv };
+  const merged = { ...baseKv };
   for (const [key, value] of Object.entries(incomingKv)) {
     if (!/^\d+$/.test(key)) continue;
     merged[key] = value;
@@ -3068,66 +3222,473 @@ function renderCurrentSlotMediaTable(kv, options = {}) {
   const tbody = document.getElementById("currentSlotMediaTableBody");
   if (!tbody) return;
 
-  kv = mergeSlotMediaKv(kv, Boolean(options.keepExisting));
-  lastSlotMediaKv = kv;
-  currentSlotMediaSlotId = normalizeDisplayNone(kv["slot id"]);
+  // NAS mode renders from the TCP "disk list" snapshot for the active (NAS) slot
+  // rather than the web API or the timeline, and must never overwrite the
+  // web/disk-list cache that other slots rely on.
+  const nasMode = filesBrowseModeNas;
+  if (nasMode) {
+    kv = mergeSlotMediaKv(kv, Boolean(options.keepExisting), lastNasMediaKv);
+    lastNasMediaKv = kv;
+  } else {
+    kv = mergeSlotMediaKv(kv, Boolean(options.keepExisting));
+    lastSlotMediaKv = kv;
+  }
+  const newSlotId = nasMode
+    ? normalizeDisplayNone(deviceState.transport_slot_id)
+    : normalizeDisplayNone(kv["slot id"]);
+  currentSlotMediaSlotId = newSlotId;
 
-  const mediaEntries = Object.entries(kv)
+  const mediaEntries = nasMode ? [] : Object.entries(kv)
     .filter(([key]) => /^\d+$/.test(key))
     .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10));
 
-  if (mediaEntries.length === 0) {
+  // The browser never presents the top-level mounts picker; the "/" root only
+  // appears transiently before a drive is bound, so treat it as an empty state.
+  const atDrivesRoot = !nasMode && filesNormalizePath(filesCurrentPath) === "/";
+  const rows = nasMode
+    ? sortSlotMediaRows(buildNasMediaRows())
+    : atDrivesRoot
+      ? []
+      : sortSlotMediaRows(buildSlotMediaRows(mediaEntries));
+
+  const browsedRootForUp = filesBrowsedSlotRootPath();
+  const browsedRootNormalized = browsedRootForUp ? (browsedRootForUp.endsWith("/") ? browsedRootForUp : `${browsedRootForUp}/`) : "";
+  const inSubfolder = Boolean(
+    browsedRootNormalized
+    && filesCurrentPath
+    && filesCurrentPath !== browsedRootNormalized
+    && filesCurrentPath.startsWith(browsedRootNormalized),
+  );
+  const folderUpRow = nasMode || !inSubfolder ? "" : slotMediaFolderUpRowHtml();
+
+  if (rows.length === 0) {
     slotMediaClipNameById = new Map();
     updateTransportClipNameIndicator();
     syncSlotMediaClipInfoCache([]);
-    const placeholder = recordingPlaceholderRowHtml();
-    tbody.innerHTML = placeholder || `<tr><td colspan="6" class="table-cell-empty">
-      No media entries returned for current slot.</td></tr>`;
+    const message = !deviceState.is_connected
+      ? "Not connected to a HyperDeck."
+      : nasMode
+        ? "No clips found on the NAS."
+        : atDrivesRoot
+          ? "Select a drive using the buttons above to browse its files."
+          : filesLoadFailed
+            ? "Could not reach the deck's file manager. The HTTP port may be blocked by the network."
+            : "No media files or folders found on this slot.";
+    tbody.innerHTML = folderUpRow + `<tr><td colspan="7" class="table-cell-empty">${escapeHtml(message)}</td></tr>`;
+    tbody.innerHTML += recordingPlaceholderRowHtml();
+    wireSlotMediaFolderUpRow(tbody);
+    renderSlotMediaSortIndicators();
     return;
   }
 
-  const mediaNames = mediaEntries.map(([, data]) => parseDiskListEntry(data).name).filter((n) => n && n !== "—");
-  syncSlotMediaClipInfoCache(mediaNames);
-
+  const mediaNames = [];
   const nextSlotMediaClipNameById = new Map();
-  for (const [idx, data] of mediaEntries) {
-    const clipId = parseInt(idx, 10);
-    if (!Number.isInteger(clipId)) continue;
-    const parsed = parseDiskListEntry(data);
-    if (parsed.name && parsed.name !== "—") {
-      nextSlotMediaClipNameById.set(clipId, parsed.name);
+  for (const row of rows) {
+    if (row.kind !== "file" || row.name === "—") continue;
+    mediaNames.push(row.name);
+    if (row.id && row.id !== "—") {
+      nextSlotMediaClipNameById.set(parseInt(row.id, 10), row.name);
     }
   }
   slotMediaClipNameById = nextSlotMediaClipNameById;
+  syncSlotMediaClipInfoCache(mediaNames);
 
-  const rows = mediaEntries.map(([idx, data]) => {
-    const parsed = parseDiskListEntry(data);
-    const clipInfo = slotMediaClipInfoByName.get(parsed.name) || {};
-    const fileSize = clipInfo.fileSize || (slotMediaPendingByName.has(parsed.name) ? "..." : "—");
-    return `<tr>
-      <td>${escapeHtml(idx)}</td>
-      <td class="clip-name" title="${escapeHtml(parsed.name)}">${escapeHtml(parsed.name)}</td>
-      <td>${escapeHtml(parsed.fileFormat)}</td>
-      <td>${escapeHtml(parsed.format)}</td>
-      <td>${escapeHtml(parsed.duration)}</td>
-      <td>${escapeHtml(fileSize)}</td>
+  slotMediaRows = rows;
+  const html = folderUpRow + rows.map((row, index) => {
+    const isFolder = row.kind === "folder";
+    const nameTdClass = "clip-name" + (isFolder ? " slot-media-folder-name" : "");
+    const nameTitle = isFolder ? "Click to open this folder" : escapeHtml(row.name);
+    const nameHtml = isFolder
+      ? `<span class="files-folder-icon" title="Folder">📁</span>${escapeHtml(row.name)}`
+      : escapeHtml(row.name);
+    const fmt = isFolder ? "Folder" : escapeHtml(row.fileFormat);
+    const size = isFolder ? "—" : escapeHtml(row.size);
+    const dlCell = isFolder || nasMode
+      ? "<td>&nbsp;</td>"
+      : `<td><a class="btn btn--xs files-action-btn files-download-link" title="Download ${escapeHtml(row.name)}" href="/api/files/download?path=${encodeURIComponent(row.path)}">⬇</a></td>`;
+    const delCell = nasMode
+      ? "<td>&nbsp;</td>"
+      : `<td><button type="button" class="btn btn--xs btn--danger files-action-btn"
+      data-action="slotMediaDelete(${index})"
+      title="${isFolder ? `Delete folder ${escapeHtml(row.name)} and its contents` : `Delete ${escapeHtml(row.name)}`}">✕</button></td>`;
+    return `<tr class="${isFolder ? "slot-media-folder-row" : ""}" data-sm-index="${index}">
+      <td class="${nameTdClass}" title="${nameTitle}">${nameHtml}</td>
+      <td>${fmt}</td>
+      <td>${escapeHtml(row.format)}</td>
+      <td>${escapeHtml(row.duration)}</td>
+      <td>${size}</td>
+      ${dlCell}
+      ${delCell}
     </tr>`;
   }).join("");
-  tbody.innerHTML = rows + recordingPlaceholderRowHtml();
+  tbody.innerHTML = html + recordingPlaceholderRowHtml();
+  renderSlotMediaSortIndicators();
 
-  // Double-click any media row to append that clip to the timeline.
+  wireSlotMediaFolderUpRow(tbody);
+
+  // Single-click a folder name to open that folder.
+  tbody.querySelectorAll("tr.slot-media-folder-row td.slot-media-folder-name").forEach((nameCell) => {
+    const rowIndex = Number(nameCell.closest("tr").getAttribute("data-sm-index"));
+    if (Number.isInteger(rowIndex) && rowIndex >= 0) {
+      nameCell.addEventListener("click", () => slotMediaOpenFolder(rowIndex));
+    }
+  });
+
+  // Double-click a clip row to append that clip to the timeline. Appending is
+  // only possible for root-level clips on the active slot: the deck's clips add
+  // resolves names against the active disk, and this firmware can't play clips
+  // that live inside folders at all.
+  const activeSlotId = normalizeDisplayNone(deviceState.transport_slot_id);
+  const effectiveActiveSlot = (!activeSlotId || isDisplayNoneToken(activeSlotId)) ? "" : activeSlotId;
+  const browsedSlotId = filesBrowsedSlotId();
+  const browsedRoot = filesBrowsedSlotRootPath();
+  const isBrowsingActiveSlot = nasMode || Boolean(effectiveActiveSlot && browsedSlotId === effectiveActiveSlot);
+
   for (const row of tbody.querySelectorAll("tr")) {
-    if (row.classList.contains("media-recording-row")) continue;
-    const nameCell = row.querySelector("td:nth-child(2)");
+    if (row.classList.contains("media-recording-row")
+      || row.classList.contains("slot-media-folder-row")
+      || row.classList.contains("slot-media-folder-up-row")) continue;
+    const nameCell = row.querySelector("td.clip-name");
     if (!nameCell) continue;
     const clipName = String(nameCell.textContent || "").trim();
     if (!clipName || clipName === "—") continue;
-    row.title = "Double-click to append this clip to timeline";
-    row.addEventListener("dblclick", () => appendCurrentSlotMediaClipToTimeline(clipName));
+    const rowIndex = Number(row.getAttribute("data-sm-index"));
+    const mediaRow = Number.isInteger(rowIndex) ? (slotMediaRows[rowIndex] || null) : null;
+
+    let appendable = false;
+    let blockReason = "";
+    if (!isBrowsingActiveSlot) {
+      const slotLabel = browsedSlotId || "—";
+      blockReason = `"${clipName}" is on Slot ${slotLabel}, which is not currently active. Make slot ${slotLabel} Active to add this clip to timeline.`;
+    } else if (!nasMode && mediaRow && filesNormalizePath(filesCurrentPath) !== filesNormalizePath(browsedRoot)) {
+      blockReason = "Files can only be added from the root folder.";
+    } else {
+      appendable = true;
+    }
+
+    row.title = appendable
+      ? "Double-click to append this clip to timeline"
+      : blockReason;
+    row.addEventListener("dblclick", () => {
+      if (appendable) {
+        appendCurrentSlotMediaClipToTimeline(clipName);
+      } else if (blockReason) {
+        showToast(blockReason, "error");
+      }
+    });
   }
 
   updateTransportClipNameIndicator();
-  requestSlotMediaClipInfo(mediaNames);
+  // clip info queries resolve against the active slot's disk; skip them when
+  // browsing a non-active slot to avoid 112 Clip not found errors.
+  if (isBrowsingActiveSlot) {
+    requestSlotMediaClipInfo(mediaNames);
+  }
+}
+
+// Re-orders the Media Browser file rows according to slotMediaSort. Folder rows
+// are always pinned at the top (after any "folder up" row) so the list keeps its
+// folders-first convention regardless of how the deck lists entries; folders
+// always sort by name (A-Z or Z-A matching the selected direction) while the
+// file rows follow the selected column.
+function sortSlotMediaRows(rows) {
+  if (!rows || rows.length < 2) return rows;
+  const sortCfg = slotMediaSort || { key: "name", dir: "asc" };
+  const dir = sortCfg.dir === "desc" ? -1 : 1;
+  const folderCompare = (a, b) =>
+    String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" }) * dir;
+  const folders = rows.filter((row) => row.kind === "folder").sort(folderCompare);
+  const files = rows.filter((row) => row.kind !== "folder");
+  files.sort(buildSlotMediaComparator(sortCfg));
+  return folders.concat(files);
+}
+
+// Returns a comparator for a sort config. Missing/unknown values sort to the
+// bottom in both directions so they never lead the list.
+function buildSlotMediaComparator(cfg) {
+  const dir = cfg.dir === "desc" ? -1 : 1;
+  const isMissing = (value) => value === undefined || value === null || value === ""
+    || value === "—" || (typeof value === "number" && !Number.isFinite(value))
+    || (typeof value === "string" && !String(value).trim());
+
+  return function compareRow(a, b) {
+    const key = cfg.key;
+    let va;
+    let vb;
+    if (key === "id") {
+      va = Number(a.id);
+      vb = Number(b.id);
+    } else if (key === "size") {
+      va = Number.isFinite(a.sizeBytes) ? a.sizeBytes : Number.NaN;
+      vb = Number.isFinite(b.sizeBytes) ? b.sizeBytes : Number.NaN;
+    } else {
+      va = String(a[key] || "");
+      vb = String(b[key] || "");
+    }
+
+    const am = isMissing(va);
+    const bm = isMissing(vb);
+    if (am !== bm) return am ? 1 : -1;
+
+    let cmp = 0;
+    if (typeof va === "number") {
+      cmp = va === vb ? 0 : (va < vb ? -1 : 1);
+    } else {
+      cmp = String(va).localeCompare(String(vb), undefined, { sensitivity: "base" });
+    }
+    return cmp * dir;
+  };
+}
+
+// Highlights the actively sorted column heading with ▲ / ▼ markers.
+function renderSlotMediaSortIndicators() {
+  const table = document.getElementById("currentSlotMediaTable");
+  if (!table) return;
+  const cfg = slotMediaSort || { key: "name", dir: "asc" };
+  table.querySelectorAll("th[data-sort-key]").forEach((th) => {
+    const key = th.getAttribute("data-sort-key");
+    const indicator = th.querySelector(`[data-sort-indicator="${key}"]`);
+    if (!indicator) return;
+    indicator.textContent = cfg.key === key ? (cfg.dir === "asc" ? " ▲" : " ▼") : "";
+    th.classList.toggle("th-sorted", cfg.key === key);
+  });
+}
+
+// HTML for the "Folder Up" row shown at the top of the Media Browser when the
+// view is inside a subfolder. The icon precedes the name in the Name column.
+function slotMediaFolderUpRowHtml() {
+  return `<tr class="slot-media-folder-up-row" title="Go to parent folder">
+      <td class="clip-name slot-media-folder-up-name" title="Go to parent folder"><span class="files-folder-icon files-folder-up-icon" title="Go to parent folder">⬆</span>..</td>
+      <td colspan="6">&nbsp;</td>
+    </tr>`;
+}
+
+// Wires the Folder Up row to navigate to the next higher folder in the hierarchy.
+function wireSlotMediaFolderUpRow(tbody) {
+  if (!tbody) return;
+  const tr = tbody.querySelector("tr.slot-media-folder-up-row");
+  if (!tr) return;
+  const parentPath = filesParentPath(filesCurrentPath);
+  tr.addEventListener("click", () => filesNavigate(parentPath));
+}
+
+// Returns the parent directory path for a filesystem path (e.g. "/a/b/" -> "/a/").
+function filesParentPath(path) {
+  const trimmed = String(path || "/").replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  if (idx <= 0) return "/";
+  return `${trimmed.slice(0, idx)}/`;
+}
+
+/**
+ * Builds the merged row list for the Current Slot Media table: folders from the
+ * deck's web file manager first, then files. Clips reported by the TCP disk
+ * list ("disk list") that are not part of the web listing are appended too, so
+ * the table still works when the deck's HTTP port is unreachable.
+ */
+function buildSlotMediaRows(mediaEntries) {
+  const rows = [];
+  const renderedNames = new Set();
+  const diskMap = buildSlotMediaDiskMap();
+  const timelineIdMap = buildSlotTimelineClipIdMap();
+  // Clip IDs and disk-derived metadata (format, duration) only apply while
+  // browsing the ACTIVE slot's mount root; the TCP disk list and the timeline
+  // snapshot both describe that one slot, so their IDs must never surface on
+  // files viewed from other slots/subfolders. IDs come from the Timeline
+  // ("clips get") so the browser view matches what the Timeline card shows.
+  const browsingActiveSlotRoot = (() => {
+    const activeSlotId = normalizeDisplayNone(deviceState.transport_slot_id);
+    if (!activeSlotId || isDisplayNoneToken(activeSlotId)) return false;
+    if (filesBrowsedSlotId() !== activeSlotId) return false;
+    const root = filesBrowsedSlotRootPath();
+    return Boolean(root && filesNormalizePath(filesCurrentPath) === filesNormalizePath(root));
+  })();
+  const showDiskClips = shouldShowDiskListClips();
+
+  for (const entry of filesEntries) {
+    if (entry.type === "directory") {
+      rows.push({
+        kind: "folder",
+        id: "",
+        name: entry.name,
+        fileFormat: "Folder",
+        format: "—",
+        duration: "—",
+        size: "—",
+        path: filesJoinPath(filesCurrentPath, entry.name),
+      });
+      continue;
+    }
+    if (entry.type !== "file") continue;
+    const disk = browsingActiveSlotRoot ? diskMap.get(entry.name) : null;
+    const timelineId = browsingActiveSlotRoot ? timelineIdMap.get(entry.name) : undefined;
+    const clipInfo = slotMediaClipInfoByName.get(entry.name) || {};
+    const fileSize = Number(entry.size) >= 0
+      ? filesFormatSize(entry.size)
+      : (clipInfo.fileSize || (slotMediaPendingByName.has(entry.name) ? "..." : "—"));
+    rows.push({
+      kind: "file",
+      id: browsingActiveSlotRoot
+        ? (timelineId !== undefined ? timelineId : (disk ? disk.id : "—"))
+        : "",
+      name: entry.name,
+      fileFormat: disk ? disk.fileFormat : "—",
+      format: disk ? disk.format : "—",
+      duration: disk ? disk.duration : "—",
+      size: fileSize,
+      sizeBytes: Number(entry.size) >= 0 ? Number(entry.size) : Number.NaN,
+      path: filesJoinPath(filesCurrentPath, entry.name),
+    });
+    renderedNames.add(entry.name);
+  }
+
+  if (showDiskClips) {
+    for (const [idx, data] of mediaEntries) {
+      const parsed = parseDiskListEntry(data);
+      if (!parsed.name || parsed.name === "—" || renderedNames.has(parsed.name)) continue;
+      const clipInfo = slotMediaClipInfoByName.get(parsed.name) || {};
+      rows.push({
+        kind: "file",
+        id: idx,
+        name: parsed.name,
+        fileFormat: parsed.fileFormat,
+        format: parsed.format,
+        duration: parsed.duration,
+        size: clipInfo.fileSize || (slotMediaPendingByName.has(parsed.name) ? "..." : "—"),
+        sizeBytes: Number(clipInfo.fileSize) >= 0 ? Number(clipInfo.fileSize) : Number.NaN,
+        path: filesJoinPath(filesCurrentPath, parsed.name),
+      });
+      renderedNames.add(parsed.name);
+    }
+  }
+
+  return rows;
+}
+
+// Builds Media Browser rows from the TCP "disk list" snapshot (206/520) for the
+// NAS share. The NAS has no web-API mount, so its listing can only be read this
+// way, and only while the NAS is the active slot. The timeline snapshot ("clips
+// get") is deliberately NOT used: appending a clip to the timeline must not make
+// it reappear in the NAS browser listing.
+function buildNasMediaRows() {
+  const rows = [];
+  const kv = lastNasMediaKv;
+  if (!kv || typeof kv !== "object") return rows;
+  const entries = Object.entries(kv)
+    .filter(([key]) => /^\d+$/.test(key))
+    .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10));
+  for (const [idx, data] of entries) {
+    const parsed = parseDiskListEntry(String(data));
+    if (!parsed.name || parsed.name === "—") continue;
+    rows.push({
+      kind: "file",
+      id: idx,
+      name: parsed.name,
+      fileFormat: parsed.fileFormat,
+      format: parsed.format,
+      duration: parsed.duration,
+      size: "—",
+      sizeBytes: Number.NaN,
+      path: "",
+    });
+  }
+  return rows;
+}
+
+// Switches the Media Browser into NAS mode and refreshes the listing from the
+// TCP disk-list snapshot. Safe to call on every activation; subsequent calls
+// replace the rows in-place without touching the web-API/disk-list cache.
+function enterNasBrowseMode() {
+  filesBrowseModeNas = true;
+  loadCurrentSlotMedia();
+  renderNasMediaBrowser();
+}
+
+// Re-renders the Media Browser from the TCP disk-list snapshot when NAS browse
+// mode is active. If the mode is off this is a no-op, so it is safe to call from
+// 205/519 handlers unconditionally.
+function renderNasMediaBrowser() {
+  if (!filesBrowseModeNas) return;
+  renderCurrentSlotMediaTable(lastNasMediaKv || {}, { keepExisting: false });
+}
+
+// Re-renders the Media Browser from whichever cache backs the current view: the
+// NAS disk-list cache while NAS browse mode is active, otherwise the web/disk
+// list cache. Callers that merely want to repaint (clip info arrived, recording
+// started/stopped, column sort) must use this instead of passing lastSlotMediaKv
+// directly, or the NAS cache would be overwritten with another slot's listing.
+function rerenderSlotMediaTable() {
+  if (filesBrowseModeNas) {
+    renderNasMediaBrowser();
+  } else {
+    renderCurrentSlotMediaTable(lastSlotMediaKv || {});
+  }
+}
+
+// Maps clip names to their numeric id and protocol metadata from the TCP disk list.
+function buildSlotMediaDiskMap() {
+  const byName = new Map();
+  const kv = lastSlotMediaKv;
+  if (!kv || typeof kv !== "object") return byName;
+  for (const [key, data] of Object.entries(kv)) {
+    if (!/^\d+$/.test(key)) continue;
+    const parsed = parseDiskListEntry(data);
+    if (!parsed.name || parsed.name === "—") continue;
+    byName.set(parsed.name, {
+      id: key,
+      fileFormat: parsed.fileFormat,
+      format: parsed.format,
+      duration: parsed.duration,
+    });
+  }
+  return byName;
+}
+
+// Maps clip names to their numeric id from the TCP "clips get" timeline snapshot
+// (the same numbers the Timeline card shows). The Media Browser shows these IDs
+// for the actively selected slot rather than the disk-list ones so the two views
+// always agree on which clip is which.
+function buildSlotTimelineClipIdMap() {
+  const byName = new Map();
+  const kv = lastTimelineClipsKv;
+  if (!kv || typeof kv !== "object") return byName;
+  const entries = Object.entries(kv)
+    .filter(([key]) => /^\d+$/.test(key))
+    .sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10));
+  const payloadLooksV2 = entries.some(([, data]) => looksLikeV2ClipEntry(data));
+  const isV2 = payloadLooksV2 || entries.length === 0;
+  for (const [key, data] of entries) {
+    const { name } = parseTimelineClipEntry(data, isV2);
+    if (name && name !== "—") byName.set(name, key);
+  }
+  return byName;
+}
+
+// The TCP "disk list" only describes the current slot's root directory, so those
+// clips only mix with the web listing while we are actually viewing that mount.
+function shouldShowDiskListClips() {
+  if (filesLoadFailed || filesMounts.length === 0) return true;
+  const slotMount = filesSlotMountPath();
+  if (!slotMount) return true;
+  return filesNormalizePath(filesCurrentPath) === filesNormalizePath(slotMount);
+}
+
+function slotMediaOpenFolder(index) {
+  const row = slotMediaRows[index];
+  if (!row || row.kind !== "folder") return;
+  filesNavigate(row.path);
+}
+
+function slotMediaDelete(index) {
+  const row = slotMediaRows[index];
+  if (!row) return;
+  if (row.kind === "folder") {
+    if (!confirm(`Delete folder "${row.name}" and all of its contents?`)) return;
+    filesSendDelete(row.path, "folder");
+  } else {
+    if (!confirm(`Delete file "${row.name}"?`)) return;
+    filesSendDelete(row.path, "file");
+  }
 }
 
 // Builds the "Recording in progress" placeholder row for the Media table. It
@@ -3137,25 +3698,15 @@ function recordingPlaceholderRowHtml() {
   if (!recordingInProgress || recordingClipAppendedName) {
     return "";
   }
-  let nextId = "";
-  if (lastSlotMediaKv && typeof lastSlotMediaKv === "object") {
-    let maxId = 0;
-    for (const key of Object.keys(lastSlotMediaKv)) {
-      if (!/^\d+$/.test(key)) continue;
-      maxId = Math.max(maxId, parseInt(key, 10));
-    }
-    if (maxId > 0) {
-      nextId = String(maxId + 1);
-    }
-  }
   const videoFormat = escapeHtml(String(deviceState.transport_video_format || "").trim() || "—");
   return `<tr class="media-recording-row">
-    <td>${escapeHtml(nextId || "—")}</td>
     <td class="clip-name media-recording-name">Recording in progress</td>
     <td>—</td>
     <td>${videoFormat}</td>
     <td>—</td>
     <td>—</td>
+    <td>&nbsp;</td>
+    <td>&nbsp;</td>
   </tr>`;
 }
 
@@ -3182,8 +3733,12 @@ function syncRecordingPlaceholder(state = deviceState) {
   if (!tbody) {
     return;
   }
-  if (lastSlotMediaKv && typeof lastSlotMediaKv === "object" && Object.keys(lastSlotMediaKv).length > 0) {
-    renderCurrentSlotMediaTable(lastSlotMediaKv);
+  const nasCacheHasRows = filesBrowseModeNas
+    && lastNasMediaKv && typeof lastNasMediaKv === "object" && Object.keys(lastNasMediaKv).length > 0;
+  const slotCacheHasRows = lastSlotMediaKv
+    && typeof lastSlotMediaKv === "object" && Object.keys(lastSlotMediaKv).length > 0;
+  if (nasCacheHasRows || slotCacheHasRows) {
+    rerenderSlotMediaTable();
   } else if (nowRecording) {
     renderCurrentSlotMediaTable({});
   }
@@ -3244,6 +3799,676 @@ function appendCurrentSlotMediaClipToTimeline(clipName) {
   if (!name || name === "—") return;
   sendCmd(buildInlineCommand("clips add", { name }));
   showToast(`Appended ${name} to timeline`, "ok");
+}
+
+// ============================================================
+// SECTION: Deck Files (web file-manager API)
+// ============================================================
+
+let filesCurrentPath = "/";
+let filesEntries = [];
+let filesMounts = [];
+let filesLoadFailed = false;
+let filesNeedsSlotBinding = true;
+let slotMediaRows = [];
+let slotMediaSort = { key: "name", dir: "asc" };
+
+// When true, the Media Browser is showing the NAS share whose file list is
+// enumerated over TCP via "clips get" (the NAS is not exposed by the web API).
+let filesBrowseModeNas = false;
+
+// Tracks `${activeSlot}:${activeExternalKind}` so the Media Browser can follow
+// the browser into the NAS listing only when the external slot actually becomes
+// the NAS (not merely when it becomes a USB or SD slot).
+let lastActiveSlotDriveKey = "";
+
+function filesJoinPath(path, name) {
+  const base = String(path || "/").endsWith("/") ? path : `${path}/`;
+  return `${base}${String(name || "")}`;
+}
+
+// Strips trailing slashes so mount-root paths can be compared regardless of
+// how each was built (filesCurrentPath always ends with "/", mount paths do not).
+function filesNormalizePath(path) {
+  const trimmed = String(path || "/").replace(/\/+$/, "");
+  return trimmed || "/";
+}
+
+function filesResetOnDisconnect() {
+  filesSetPath("/");
+  filesEntries = [];
+  filesMounts = [];
+  filesLoadFailed = false;
+  filesNeedsSlotBinding = true;
+  filesBrowseModeNas = false;
+  lastActiveSlotDriveKey = "";
+  timelineBaselineSlotId = "";
+  timelineBaselineNames = null;
+  slotMediaRows = [];
+  renderFilesSlotButtons();
+  renderFilesBreadcrumb();
+  updateSlotMediaHeader();
+  renderCurrentSlotMediaTable(lastSlotMediaKv || {});
+}
+
+function filesSlotMountPath() {
+  const mounts = filesMounts.filter((entry) => entry.type === "directory");
+  if (mounts.length === 0) return null;
+  const slotId = normalizeDisplayNone(deviceState.transport_slot_id);
+  const slotNum = Number.parseInt(String(slotId || ""), 10);
+  if (slotNum === 1 || slotNum === 2) {
+    const target = mounts.find((entry) => new RegExp(`sd${slotNum}$`).test(entry.name));
+    if (target) return filesJoinPath("/", target.name);
+    return null;
+  }
+  const usb = mounts.find((entry) => /^usb\//.test(entry.name));
+  if (usb) return filesJoinPath("/", usb.name);
+  if (mounts.length === 1) return filesJoinPath("/", mounts[0].name);
+  return null;
+}
+
+function filesSetPath(path) {
+  const next = String(path || "/");
+  filesCurrentPath = next === "/" ? "/" : next.endsWith("/") ? next : `${next}/`;
+}
+
+async function filesFetchList(path) {
+  let res;
+  try {
+    res = await fetch(`/api/files/list?path=${encodeURIComponent(path)}`);
+  } catch {
+    return null;
+  }
+  let payload = null;
+  try { payload = await res.json(); } catch { payload = null; }
+  if (!res.ok || !payload || payload.ok !== true) {
+    return null;
+  }
+  return Array.isArray(payload.entries) ? payload.entries : [];
+}
+
+// Maps a slot id to its web-API mount entry (directory), or null when unknown.
+// SD slots are recognised by their "sdN" name suffix; the external slot takes
+// whichever USB/network mount (or leftover mount) is present.
+function filesSlotMountForId(slotId) {
+  const id = String(slotId || "").trim();
+  const mounts = filesMounts.filter((entry) => entry.type === "directory");
+  if (mounts.length === 0) return null;
+  const nameOf = (entry) => String(entry.name || "").replace(/\/$/, "");
+  const bySuffix = (suffix) => mounts.find((entry) => new RegExp(`${suffix}$`, "i").test(nameOf(entry))) || null;
+
+  if (id === "1") return bySuffix("sd1");
+  if (id === "2") return bySuffix("sd2");
+
+  const used = new Set();
+  for (const m of mounts) {
+    if (/sd[12]$/i.test(nameOf(m))) used.add(nameOf(m));
+  }
+  const leftover = mounts.filter((entry) => !used.has(nameOf(entry)));
+  const preferred = resolveActiveExternalKind(Number.parseInt(id, 10) || 0) || "usb";
+  const preferredKind = leftover.find((entry) => new RegExp(`^${preferred}/`, "i").test(nameOf(entry))) || null;
+  if (preferredKind) return preferredKind;
+  const usb = leftover.find((entry) => /^usb\//i.test(nameOf(entry))) || null;
+  if (usb) return usb;
+  const network = leftover.find((entry) => /^network\//i.test(nameOf(entry))) || null;
+  if (network) return network;
+  return leftover[0] || null;
+}
+
+// The slot id whose mount root is currently being browsed, or "" when the
+// browser is at Home (/), or no slot matches the current path. Matches by full
+// mount-root path (not the first path segment) so multi-segment mount names
+// such as USB drives ("usb/8GB_USB") are recognised at and below their root.
+function filesBrowsedSlotId() {
+  if (filesBrowseModeNas) {
+    const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
+    return Number.isInteger(slotCount) && slotCount >= 1 ? String(slotCount) : "";
+  }
+  const current = filesNormalizePath(filesCurrentPath);
+  if (!current || current === "/") return "";
+  const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
+  for (let i = 1; i <= slotCount; i += 1) {
+    const mount = filesSlotMountForId(i);
+    if (!mount) continue;
+    const root = filesNormalizePath(filesJoinPath("/", mount.name));
+    if (current === root || current.startsWith(`${root}/`)) {
+      return String(i);
+    }
+  }
+  return "";
+}
+
+// Full mount-root path for the slot currently being browsed, or "" when the
+// browser is not inside a slot mount (e.g. at Home).
+function filesBrowsedSlotRootPath() {
+  const idle = filesBrowsedSlotId();
+  if (!idle) return "";
+  const mount = filesSlotMountForId(idle);
+  return mount ? filesJoinPath("/", mount.name) : "";
+}
+
+// Renders the fixed per-slot browse buttons plus separate NAS/USB buttons for
+// the external slot. Browsing never changes the active slot - the button only
+// points the file view at that drive's mount. NAS refuses to show its share
+// until the external slot is active, so choosing NAS while another slot is
+// active warns (changing the Active Slot rebuilds the timeline) and switches
+// the active slot first; USB is simply browsed read-only like the SD slots.
+function renderFilesSlotButtons() {
+  const host = document.getElementById("filesSlotButtons");
+  if (!host) return;
+  const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
+  if (!Number.isInteger(slotCount) || slotCount < 1) {
+    host.innerHTML = "";
+    return;
+  }
+  const activeSlot = normalizeDisplayNone(deviceState.transport_slot_id);
+  const externalSlotId = slotCount >= 3 ? String(slotCount) : "";
+  const activeExternalKind = resolveActiveExternalKind(slotCount);
+
+  // Auto-enter NAS browse mode when the active slot transitions to
+  // external+network (e.g. user clicked the switcher or NAS tab and the deck
+  // confirmed the slot change). This lets the Media Browser follow the NAS
+  // listing without requiring a second click on the NAS browse button.
+  const driveKey = externalSlotId ? `${activeSlot}:${activeExternalKind}` : "";
+  if (externalSlotId
+      && activeSlot === externalSlotId
+      && activeExternalKind === "network"
+      && driveKey !== lastActiveSlotDriveKey) {
+    enterNasBrowseMode();
+  }
+  lastActiveSlotDriveKey = driveKey;
+
+  const browsedSlotId = filesBrowsedSlotId();
+
+  const buttons = Array.from({ length: Math.min(slotCount, 2) }, (_, idx) => {
+    const slotId = String(idx + 1);
+    const mount = filesSlotMountForId(slotId);
+    const isBrowsed = browsedSlotId === slotId;
+    const isActive = activeSlot === slotId;
+    const classes = ["slot-switcher__btn", "slot-switcher__btn--browse"];
+    if (isBrowsed) classes.push("slot-switcher__btn--browse-active");
+    if (isActive) classes.push("slot-switcher__btn--browse-current");
+    if (!mount) classes.push("slot-switcher__btn--disabled");
+
+    const mountLabel = mount ? String(mount.name).replace(/\/$/, "") : "";
+    const title = mount
+      ? `Browse Slot ${slotId} files (${mountLabel})${isActive ? " - the active slot" : " - reading only, does not switch the active slot"}`
+      : `No media detected for Slot ${slotId}`;
+
+    return `<button
+      type="button"
+      class="${classes.join(" ")}"
+      data-browse-slot="${slotId}"
+      ${mount ? "" : "disabled"}
+      title="${escapeHtml(title)}">${isActive ? "▶ " : ""}Slot ${slotId}</button>`;
+  });
+
+  // Mirror the Active Recording Slot card: the selected drive (NAS or USB)
+  // comes first, then the other one. SD slots always lead in fixed order.
+  const externalDriveButtons = [];
+  if (nasMounted && externalSlotId) {
+    externalDriveButtons.push(buildExternalDriveBrowseButton({
+      label: "NAS", kind: "network", externalSlotId,
+      activeSlot, activeExternalKind,
+    }));
+  }
+  if (usbDrivePresent && externalSlotId) {
+    externalDriveButtons.push(buildExternalDriveBrowseButton({
+      label: "USB", kind: "usb", externalSlotId,
+      activeSlot, activeExternalKind,
+    }));
+  }
+  externalDriveButtons.sort((a, b) => {
+    const kindOf = (html) => {
+      const match = String(html || "").match(/data-browse-drive="([^"]+)"/);
+      return match ? match[1] : "";
+    };
+    const kindA = kindOf(a);
+    const kindB = kindOf(b);
+    if (kindA === activeExternalKind) return -1;
+    if (kindB === activeExternalKind) return 1;
+    return 0;
+  });
+  buttons.push(...externalDriveButtons);
+
+  host.innerHTML = buttons.join("");
+
+  for (const btn of host.querySelectorAll("button[data-browse-slot]")) {
+    btn.addEventListener("click", () => {
+      if (btn.hasAttribute("data-browse-drive")) return;
+      const slotId = String(btn.getAttribute("data-browse-slot") || "").trim();
+      if (slotId) filesJumpToSlot(slotId);
+    });
+  }
+
+  for (const btn of host.querySelectorAll("button[data-browse-drive]")) {
+    btn.addEventListener("click", () => {
+      const kind = String(btn.getAttribute("data-browse-drive") || "").trim();
+      if (kind) browseExternalDrive(kind);
+    });
+  }
+
+  // Disable Upload/New Folder toolbar actions when the Media Browser is in NAS
+  // mode — those actions require a web-API path which the NAS does not expose.
+  const uploadBtn = document.querySelector('[data-action="filesPickUpload()"]');
+  const newFolderBtn = document.querySelector('[data-action="filesNewFolder()"]');
+  if (uploadBtn) uploadBtn.disabled = filesBrowseModeNas;
+  if (newFolderBtn) newFolderBtn.disabled = filesBrowseModeNas;
+}
+
+function buildExternalDriveBrowseButton(opts) {
+  const { label, kind, externalSlotId, activeSlot, activeExternalKind } = opts;
+  const mount = filesExternalDriveMount(kind);
+  const isDriveActive = activeExternalKind === kind;
+  const isActive = activeSlot === externalSlotId && isDriveActive;
+  const isBrowsed = isBrowsingExternalDrive(kind);
+  const isNetwork = kind === "network";
+  const classes = ["slot-switcher__btn", "slot-switcher__btn--browse", "slot-switcher__btn--drive"];
+  if (isBrowsed) classes.push("slot-switcher__btn--browse-active");
+  if (isActive) classes.push("slot-switcher__btn--browse-current");
+  // NAS buttons are never disabled (always clickable — warning appears on click);
+  // USB buttons are disabled only when no mount exists.
+  if (!isNetwork && !mount) classes.push("slot-switcher__btn--disabled");
+  // Grey-but-clickable appearance for a NAS that is not currently the active drive.
+  if (isNetwork && !isDriveActive) classes.push("slot-switcher__btn--drive-offline");
+
+  const mountLabel = mount ? String(mount.name).replace(/\/$/, "") : "";
+  let title;
+  if (isNetwork) {
+    title = isActive
+      ? "Browse NAS files - the active slot"
+      : "Make NAS the active slot to browse its files";
+  } else {
+    title = mount
+      ? `Browse USB files (${mountLabel})${isActive ? " - the active slot" : " - reading only, does not switch the active slot"}`
+      : "No USB drive detected";
+  }
+
+  return `<button
+    type="button"
+    class="${classes.join(" ")}"
+    data-browse-drive="${kind}"
+    data-browse-slot="${externalSlotId}"
+    ${!isNetwork && !mount ? "disabled" : ""}
+    title="${escapeHtml(title)}">${isActive ? "▶ " : ""}${label}</button>`;
+}
+
+// USB drives expose their web-API mount directly and can be browsed read-only
+// without touching the active slot, same as the SD slots. The NAS share, by
+// contrast, only becomes viewable once the external slot is active, so choosing
+// NAS while another slot is active warns (changing the active slot rebuilds the
+// timeline) and then makes it active before browsing.
+function browseExternalDrive(kind) {
+  if (kind !== "network") {
+    filesJumpToExternalDrive("usb");
+    return;
+  }
+
+  const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
+  if (!Number.isInteger(slotCount) || slotCount < 1) {
+    showToast("No external drive slot available", "error");
+    return;
+  }
+  const externalSlotId = String(slotCount);
+  const activeSlot = normalizeDisplayNone(deviceState.transport_slot_id);
+  const activeKind = resolveActiveExternalKind(slotCount);
+
+  // NAS is already active — just enter browse mode directly (web API cannot
+  // serve NAS files, so there is no mount to jump to).
+  if (activeSlot === externalSlotId && activeKind === "network") {
+    enterNasBrowseMode();
+    return;
+  }
+
+  if (uiPreferences.showSlotSwitchWarning !== false) {
+    const proceed = window.confirm(
+      "The NAS share must be made the Active Slot to browse its files. " +
+      "Changing the Active Slot will rebuild the Timeline and you will lose any Timeline edits. Proceed?"
+    );
+    if (!proceed) return;
+  }
+
+  const device = externalDriveDevices.find((d) => d.kind === "network");
+  activeExternalDriveKind = "network";
+  if (device) {
+    // Canonical switcher path: attach the network device to the external slot,
+    // then activate that slot (only needed when it isn't already active).
+    sendCmd(`external drive select: device: ${device.token}`);
+    if (activeSlot !== externalSlotId) {
+      sendCmd(`slot select: slot id: ${externalSlotId}`);
+    }
+  } else {
+    // The cached external-drive list can be stale/empty (e.g. it was queried
+    // before the share was mounted), so target the network device directly with
+    // the same command the NAS tab's "Select NAS as Recording Destination" uses.
+    sendCmd("slot select: device: network");
+  }
+  showToast(`Selecting NAS (Slot ${externalSlotId})…`, "ok");
+  enterNasBrowseMode();
+}
+
+// The web-API mount entry for a connected external drive kind (network share or
+// USB drive), or null when that drive has no mount listed.
+function filesExternalDriveMount(kind) {
+  const prefix = kind === "network" ? "network/" : "usb/";
+  return filesMounts.find(
+    (entry) => entry.type === "directory" && new RegExp(`^${prefix}`, "i").test(String(entry.name))
+  ) || null;
+}
+
+// True when the browser is currently inside the mount for the given drive kind.
+function isBrowsingExternalDrive(kind) {
+  if (kind === "network") return filesBrowseModeNas;
+  // While NAS browse mode is active the web-API path may still be sitting inside
+  // the USB tree from a previous interaction; only report USB as browsed when we
+  // are genuinely NOT in NAS mode.
+  if (filesBrowseModeNas) return false;
+  const firstSeg = String(filesCurrentPath || "").split("/").filter(Boolean)[0] || "";
+  return firstSeg === "usb";
+}
+
+// Points the browser at a specific external drive mount via the web API.
+function filesJumpToExternalDrive(kind) {
+  const mount = filesExternalDriveMount(kind);
+  if (!mount) {
+    showToast(kind === "network" ? "No NAS share is mounted" : "No USB drive is present", "error");
+    return;
+  }
+  filesNavigate(filesJoinPath("/", mount.name));
+}
+
+// Points the browser at a slot's mount root via the web API (no TCP involved).
+function filesJumpToSlot(slotId) {
+  const mount = filesSlotMountForId(slotId);
+  if (!mount) {
+    showToast(`No media detected for Slot ${slotId}`, "error");
+    return;
+  }
+  filesNavigate(filesJoinPath("/", mount.name));
+}
+
+// The Media Browser never shows a top-level "Home" mounts picker; it lands
+// directly on the drive mount itself. A mount's whole name ("usb/8GB_USB") is a
+// single crumb (labelled with its drive name) instead of being split on its
+// slashes, so the phantom intermediate "usb" folder level disappears and the
+// drive root is recognised as the slot mount by filesBrowsedSlotId().
+function renderFilesBreadcrumb() {
+  const bar = document.getElementById("filesBreadcrumb");
+  if (!bar) return;
+  bar.replaceChildren();
+  if (filesBrowseModeNas) {
+    const cur = document.createElement("span");
+    cur.className = "files-breadcrumb__item files-breadcrumb__item--current";
+    cur.textContent = "NAS";
+    bar.appendChild(cur);
+    return;
+  }
+  const currentPath = filesNormalizePath(filesCurrentPath);
+  const crumbs = [];
+  const browsedSlotId = filesBrowsedSlotId();
+  const mount = browsedSlotId ? filesSlotMountForId(browsedSlotId) : null;
+  if (mount) {
+    const mountRoot = filesNormalizePath(filesJoinPath("/", mount.name));
+    const mountLabel = String(mount.name).replace(/\/$/, "").split("/").filter(Boolean).pop() || "Drive";
+    crumbs.push({ label: mountLabel, path: mountRoot, isLast: currentPath === mountRoot });
+    if (!crumbs[0].isLast) {
+      const rest = currentPath.startsWith(`${mountRoot}/`)
+        ? currentPath.slice(mountRoot.length).split("/").filter(Boolean)
+        : [];
+      let acc = mountRoot;
+      rest.forEach((seg, index) => {
+        acc = `${acc}/${seg}`;
+        crumbs.push({ label: seg, path: acc, isLast: index === rest.length - 1 });
+      });
+    }
+  } else {
+    crumbs.push({ label: "Drives", path: "/", isLast: true });
+  }
+  crumbs.forEach((crumb, index) => {
+    if (index > 0) {
+      const sep = document.createElement("span");
+      sep.className = "files-breadcrumb__sep";
+      sep.textContent = "/";
+      bar.appendChild(sep);
+    }
+    if (crumb.isLast) {
+      const cur = document.createElement("span");
+      cur.className = "files-breadcrumb__item files-breadcrumb__item--current";
+      cur.textContent = crumb.label;
+      bar.appendChild(cur);
+      return;
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "files-breadcrumb__item";
+    btn.textContent = crumb.label;
+    btn.addEventListener("click", () => filesNavigate(crumb.path));
+    bar.appendChild(btn);
+  });
+}
+
+function filesFormatSize(size) {
+  const value = Number(size);
+  if (!Number.isFinite(value) || value < 0) return "—";
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = value;
+  let unit = -1;
+  do {
+    scaled /= 1024;
+    unit += 1;
+  } while (scaled >= 1024 && unit < units.length - 1);
+  return `${scaled.toFixed(scaled >= 100 ? 0 : 1)} ${units[unit]}`;
+}
+
+// Reflects the SLOT BEING BROWSED (not the active slot) in the card title.
+function updateSlotMediaHeader() {
+  const el = document.getElementById("currentSlotMediaSlotId");
+  if (!el) return;
+  if (deviceState.is_connected !== true) {
+    el.textContent = "—";
+    return;
+  }
+  if (filesBrowseModeNas) {
+    el.textContent = "NAS";
+    return;
+  }
+  const firstSeg = String(filesCurrentPath || "").split("/").filter(Boolean)[0] || "";
+  if (firstSeg === "usb") {
+    el.textContent = "USB";
+    return;
+  }
+  if (firstSeg === "network") {
+    el.textContent = "NAS";
+    return;
+  }
+  const browsedSlotId = filesBrowsedSlotId();
+  if (browsedSlotId) {
+    el.textContent = `Slot ${browsedSlotId}`;
+    return;
+  }
+  el.textContent = "Drives";
+}
+
+function filesNavigate(path) {
+  filesBrowseModeNas = false;
+  filesSetPath(path);
+  filesNeedsSlotBinding = false;
+  filesRefresh();
+}
+
+function filesBindToSlotMount() {
+  const target = filesSlotMountPath();
+  if (!target) return;
+  filesNeedsSlotBinding = false;
+  if (target !== filesCurrentPath) {
+    filesSetPath(target);
+    filesRefresh();
+  }
+}
+
+async function filesRefresh() {
+  if (!deviceState.is_connected) {
+    filesResetOnDisconnect();
+    return;
+  }
+  const [rootEntries, dirEntries] = await Promise.all([
+    filesFetchList("/"),
+    filesCurrentPath === "/" ? Promise.resolve([]) : filesFetchList(filesCurrentPath),
+  ]);
+  const rootFailed = rootEntries === null;
+  const dirFailed = dirEntries === null;
+  const dirList = dirEntries === null ? [] : dirEntries;
+  const rootList = rootEntries === null ? [] : rootEntries;
+  filesMounts = rootList;
+  filesEntries = filesCurrentPath === "/" ? rootList : dirList;
+  filesLoadFailed = rootFailed || dirFailed;
+  if (filesNeedsSlotBinding && filesMounts.length > 0) {
+    filesBindToSlotMount();
+  }
+  renderFilesSlotButtons();
+  renderFilesBreadcrumb();
+  updateSlotMediaHeader();
+  if (filesBrowseModeNas) {
+    // The web API has no mount for the NAS share, so refreshing while in NAS
+    // mode must re-request the TCP disk list and re-render from the NAS cache.
+    // Feeding lastSlotMediaKv here would overwrite the NAS cache with the
+    // previous slot's web listing.
+    loadCurrentSlotMedia();
+    renderNasMediaBrowser();
+  } else {
+    renderCurrentSlotMediaTable(lastSlotMediaKv || {});
+  }
+  refreshTimelineBaseline();
+}
+
+function filesPickUpload() {
+  if (filesBrowseModeNas) return;
+  const input = document.getElementById("filesFileInput");
+  if (!input) return;
+  input.click();
+}
+
+function filesHandleFilesInput(event) {
+  const input = event && event.target;
+  const files = input && input.files ? Array.from(input.files) : [];
+  if (files.length === 0) return;
+  const duplicates = files.filter((file) =>
+    filesEntries.some((entry) => entry.name === file.name));
+  if (duplicates.length > 0) {
+    const names = duplicates.map((file) => file.name).join(", ");
+    const message = `"${names}" already exist in this folder. Overwrite anyway?`;
+    if (!confirm(message)) {
+      input.value = "";
+      return;
+    }
+  }
+  input.value = "";
+  filesUploadMany(files);
+}
+
+function filesUploadMany(files) {
+  const base = filesCurrentPath;
+  const total = files.length;
+  let cursor = 0;
+  const progressEl = document.getElementById("filesUploadProgress");
+  const fillEl = document.getElementById("filesUploadFill");
+  const labelEl = document.getElementById("filesUploadLabel");
+  const showProgress = (pct, text) => {
+    if (!progressEl) return;
+    progressEl.hidden = false;
+    if (fillEl) fillEl.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    if (labelEl) labelEl.textContent = text;
+  };
+  const hideProgress = () => {
+    if (progressEl) progressEl.hidden = true;
+  };
+  if (total === 0) return;
+  showProgress(0, `Uploading 0 of ${total}...`);
+  const runNext = () => {
+    if (cursor >= total) {
+      hideProgress();
+      showToast(`Uploaded ${total} file(s)`, "ok");
+      filesRefresh();
+      return;
+    }
+    const file = files[cursor];
+    const done = cursor;
+    cursor += 1;
+    const xhr = new XMLHttpRequest();
+    const itemPath = filesJoinPath(base, file.name);
+    xhr.open("PUT", `/api/files/upload?path=${encodeURIComponent(itemPath)}`);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = ((done + e.loaded / e.total) / total) * 100;
+        showProgress(pct, `Uploading ${file.name} (${done} of ${total} done)...`);
+      }
+    };
+    xhr.onload = () => {
+      let payload = null;
+      try { payload = JSON.parse(xhr.responseText); } catch { payload = null; }
+      if (xhr.status >= 200 && xhr.status < 300 && payload && payload.ok === true) {
+        runNext();
+      } else {
+        const detail = payload && payload.detail ? payload.detail : `HTTP ${xhr.status}`;
+        showToast(`Upload of "${file.name}" failed: ${detail}`, "error");
+        hideProgress();
+        filesRefresh();
+      }
+    };
+    xhr.onerror = () => {
+      showToast(`Upload of "${file.name}" failed`, "error");
+      hideProgress();
+      filesRefresh();
+    };
+    xhr.send(file);
+  };
+  runNext();
+}
+
+function filesNewFolder() {
+  if (filesBrowseModeNas) return;
+  const name = prompt("New folder name:");
+  if (!name) return;
+  const clean = String(name).trim().replace(/[\\/]/g, "-");
+  if (!clean) return;
+  (async () => {
+    let res;
+    try {
+      res = await fetch(`/api/files/mkdir?path=${encodeURIComponent(filesJoinPath(filesCurrentPath, clean))}`, { method: "POST" });
+    } catch {
+      showToast("Could not reach the HyperDeck server", "error");
+      return;
+    }
+    let payload = null;
+    try { payload = await res.json(); } catch { payload = null; }
+    if (res.ok && payload && payload.ok === true) {
+      showToast(`Folder "${clean}" created`, "ok");
+    } else {
+      showToast((payload && payload.detail) || `Create folder failed (${res.status})`, "error");
+    }
+    filesRefresh();
+  })();
+}
+
+async function filesSendDelete(itemPath, what) {
+  let res;
+  try {
+    res = await fetch(`/api/files/delete?path=${encodeURIComponent(itemPath)}`, { method: "DELETE" });
+  } catch {
+    showToast("Could not reach the HyperDeck server", "error");
+    return;
+  }
+  let payload = null;
+  try { payload = await res.json(); } catch { payload = null; }
+  if (res.ok && payload && payload.ok === true) {
+    showToast(`${what === "folder" ? "Folder" : "File"} deleted`, "ok");
+    loadCurrentSlotMedia();
+  } else {
+    showToast((payload && payload.detail) || `Delete failed (${res.status})`, "error");
+  }
+  filesRefresh();
 }
 
 /** Update the clip count badge in the Clips tab header. */
@@ -3764,9 +4989,17 @@ function chooseExternalDrive(kind) {
     showToast("That external drive is not currently available", "error");
     return;
   }
+  const slotCount = Number.parseInt(String(deviceState.slot_count || 0), 10);
+  const activeSlot = normalizeDisplayNone(deviceState.transport_slot_id);
+  if (Number.isInteger(slotCount) && String(activeSlot) === String(slotCount) && !confirmSlotSwitchClearsTimeline("Slot 3 (external drive)")) {
+    return;
+  }
   activeExternalDriveKind = kind;
   sendCmd(`external drive select: device: ${device.token}`);
   renderCurrentSlotSwitcher(deviceState);
+  if (Number.isInteger(slotCount) && slotCount >= 1) {
+    filesJumpToSlot(String(slotCount));
+  }
 }
 
 // ============================================================
@@ -4107,6 +5340,7 @@ function activateTab(tabName) {
     loadAllSlotStates();
     loadCurrentSlotMedia();
     sendCmd("external drive list");
+    filesRefresh();
   }
 
   if (tabName === "nas" && deviceState.is_connected === true) {
@@ -4382,11 +5616,13 @@ function loadUiPreferences() {
     }
     for (const key of [
       "showTimelineAddClip",
+      "showMediaBrowser",
       "showMediaSlotInfo",
       "showMediaRecordSpill",
       "showMediaAddClip",
       "showMediaAddFormat",
       "showMediaFormatDisk",
+      "showSlotSwitchWarning",
       "showTimelineTab",
       "showMediaTab",
       "showDeviceTab",
@@ -4441,6 +5677,7 @@ function applyUiPreferencesToUI() {
   const gotoCard = document.getElementById("transportGotoCard");
   const playRangeCard = document.getElementById("transportPlayRangeCard");
   setVisibility("timelineAddClipCard", uiPreferences.showTimelineAddClip);
+  setVisibility("mediaBrowserCard", uiPreferences.showMediaBrowser);
   setVisibility("currentSlotInfoSection", uiPreferences.showMediaSlotInfo);
   setVisibility("mediaRecordSpillCard", uiPreferences.showMediaRecordSpill);
   setVisibility("mediaAddClipCard", uiPreferences.showMediaAddClip);
@@ -4448,11 +5685,13 @@ function applyUiPreferencesToUI() {
   setVisibility("mediaFormatDiskCard", uiPreferences.showMediaFormatDisk);
 
   setCheckbox("cfgShowTimelineAddClip", uiPreferences.showTimelineAddClip);
+  setCheckbox("cfgShowMediaBrowser", uiPreferences.showMediaBrowser);
   setCheckbox("cfgShowMediaSlotInfo", uiPreferences.showMediaSlotInfo);
   setCheckbox("cfgShowMediaRecordSpill", uiPreferences.showMediaRecordSpill);
   setCheckbox("cfgShowMediaAddClip", uiPreferences.showMediaAddClip);
   setCheckbox("cfgShowMediaAddFormat", uiPreferences.showMediaAddFormat);
   setCheckbox("cfgShowMediaFormatDisk", uiPreferences.showMediaFormatDisk);
+  setCheckbox("cfgShowSlotSwitchWarning", uiPreferences.showSlotSwitchWarning);
   setVisibility("nasAddBookmarkCard", uiPreferences.showNasAddBookmark);
   setVisibility("nasMountShareCard", uiPreferences.showNasMountShare);
   setVisibility("nasDiscoveryCard", uiPreferences.showNasDiscovery);
@@ -4585,11 +5824,13 @@ const TRANSPORT_SECTION_PREF_TOGGLES = {
 
 const TIMELINE_MEDIA_PREF_TOGGLES = {
   cfgShowTimelineAddClip: "showTimelineAddClip",
+  cfgShowMediaBrowser: "showMediaBrowser",
   cfgShowMediaSlotInfo: "showMediaSlotInfo",
   cfgShowMediaRecordSpill: "showMediaRecordSpill",
   cfgShowMediaAddClip: "showMediaAddClip",
   cfgShowMediaAddFormat: "showMediaAddFormat",
   cfgShowMediaFormatDisk: "showMediaFormatDisk",
+  cfgShowSlotSwitchWarning: "showSlotSwitchWarning",
 };
 
 const NAS_CARDS_PREF_TOGGLES = {
@@ -4780,6 +6021,10 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "confirmClipsClear",
   "confirmReboot",
   "downloadCommandListXml",
+  "filesHandleFilesInput",
+  "filesNewFolder",
+  "filesPickUpload",
+  "filesRefresh",
   "onSidebarRemoteIndicatorClick",
   "onSidebarTimecodeClick",
   "onTopbarStatusClick",
@@ -4787,6 +6032,7 @@ const DECLARATIVE_ACTION_FUNCTIONS = new Set([
   "removeClip",
   "sendCmd",
   "sendConsoleCommand",
+  "slotMediaDelete",
   "toggleDashboardOverride",
   "toggleDashboardRemote",
   "uiConnect",
@@ -4945,11 +6191,13 @@ const PREF_TOGGLE_LISTENERS = {
   cfgPinTransportToDashboard: onCfgPinTransportToDashboardToggleChange,
   cfgPinTransportToDashboard2: onCfgPinTransportToDashboardToggleChange,
   cfgShowTimelineAddClip: onCfgShowTimelineMediaToggleChange,
+  cfgShowMediaBrowser: onCfgShowTimelineMediaToggleChange,
   cfgShowMediaSlotInfo: onCfgShowTimelineMediaToggleChange,
   cfgShowMediaRecordSpill: onCfgShowTimelineMediaToggleChange,
   cfgShowMediaAddClip: onCfgShowTimelineMediaToggleChange,
   cfgShowMediaAddFormat: onCfgShowTimelineMediaToggleChange,
   cfgShowMediaFormatDisk: onCfgShowTimelineMediaToggleChange,
+  cfgShowSlotSwitchWarning: onCfgShowTimelineMediaToggleChange,
   cfgShowTimelineTab: onCfgShowTabVisibilityChange,
   cfgShowMediaTab: onCfgShowTabVisibilityChange,
   cfgShowDeviceTab: onCfgShowTabVisibilityChange,
@@ -5013,11 +6261,32 @@ function initUI() {
   initResizableTable("currentSlotMediaTable");
   initTransportButtonsWrapObserver();
 
+  // Sortable column headings on the Media Browser table.
+  document.querySelectorAll("#currentSlotMediaTable th[data-sort-key]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.getAttribute("data-sort-key");
+      if (!key) return;
+      const current = slotMediaSort || { key: "name", dir: "asc" };
+      slotMediaSort = {
+        key,
+        dir: current.key === key ? (current.dir === "asc" ? "desc" : "asc") : "asc",
+      };
+      if (filesBrowseModeNas) {
+        renderNasMediaBrowser();
+      } else {
+        renderCurrentSlotMediaTable(lastSlotMediaKv || {});
+      }
+    });
+  });
+
   applyUiPreferencesToUI();
 
   document.getElementById("connProfilePort")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") addConnectionProfileFromForm();
   });
+
+  // Populate the Deck Files panel immediately if already connected.
+  if (deviceState.is_connected) filesRefresh();
 
   // Open the WebSocket to the backend immediately on page load.
   // The actual HyperDeck TCP connection is initiated by the user via Connect.

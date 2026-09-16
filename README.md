@@ -78,6 +78,7 @@ If you get `111 remote control disabled`, enable remote control on the deck and 
 - Transport controls: play, stop, jog, shuttle, goto, play range
 - Clip and timeline actions
 - Slot and disk tools, NAS connectivity, and disk format flow
+- **Deck Files** in the Media tab: the **Media Browser** card merges the deck file-manager listing (folders first, with a ⬆ Folder Up row when inside a subfolder) with the clip list and adds download/delete/upload/create-folder, so you can browse the media mounts on the deck (SD slots and USB drives). Uses the deck's built-in web file manager on port 80; see `docs/deck-web-api.md`. A top **Active Recording Slot** card shows the active slot in its title (e.g. `ACTIVE RECORDING SLOT - SLOT 1 (UNTITLED-SD1)`), the slot-select buttons, and the active slot info; clicking a slot button switches the active slot and points the browser at its files. Changing the active slot always warns that the timeline will be rebuilt (this can be turned off via the **Show warning when changing Active Slot** toggle in Preferences → Media Tab). The **View files** buttons browse the SD slots without making them the active slot, **USB** is browsed read-only the same way, and **NAS**/**USB** replace the old "Slot 3" button (each shown only when that drive is mounted); choosing the NAS when it isn't the active slot warns that it must be made active to browse its files, which rebuilds the timeline. Double-clicks in a folder are blocked because the deck cannot append clips from folders. Media Browser columns sort by Name, File Format, Video Format, Duration, and File Size (click a heading; click again for Z→A; folders always sort by name and stay pinned on top).
 - Configuration controls, including option to hide GUI features you may not need
 - Live console for command/response visibility
 
@@ -98,6 +99,8 @@ This file includes:
 - `static/app.js` - browser-side app logic
 - `test/` - unit and integration tests (run with `npm test`)
 - `scripts/setup-hooks.js` - git pre-commit hook installer
+- `scripts/deck-files-proxy.js` - optional HTTP logging proxy for capturing the deck's file-manager traffic
+- `docs/deck-web-api.md` - reverse-engineered docs for the deck's port-80 file manager API
 - `connections.json` - saved local settings
 
 ## License
@@ -110,6 +113,7 @@ This project was written nearly entirely by GitHub Copilot; I essentially gave i
 ## KNOWN ISSUES
 - I DID NOT CHECK THIS CODE FOR SECURITY. There is no user authentication flow.  Use on an internal network only, do not expose this to the internet!
 - When switching between card slots the Timeline is cleared and re-populated with all the clips on the card.  I believe this is a limitation of the deck itself.  It would be interesting to attempt a way to save the Timeline clips / ins and outs and have them persist, or be saved / restored from an external file.   
+- The deck refuses to append clips from inside a folder to the timeline (`clips add` returns `112 clip not found` for every folder-path variant tested, e.g. `folder1/name.mp4`, `UNTITLED-sd1/folder/name.mp4`). Only clips at the mount root of the active slot can be added, so the app blocks double-clicks on folder clips.   
 - This program was developed and tested against a HyperDeck Studio  HD Plus.  I do not have access to other HyperDeck models and this program has not yet been tested with them.
 - The SLATE tab is completely untested!  It may not work at all.
 

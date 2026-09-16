@@ -418,13 +418,10 @@
        ═══════════════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-slots">
 
-    <!-- Current slot media -->
-    <div class="card card--full">
-      <div class="card__title-row">
-        <h2 class="card__title">Current Slot Media - <span id="currentSlotMediaSlotId">—</span></h2>
-      </div>
-      <p class="hint">Automatically lists media files available on the currently selected slot when this tab is opened.</p>
-      <p class="hint">Double-click a clip to append it to the timeline.</p>
+    <!-- Active Recording Slot -->
+    <div class="card">
+      <h2 class="card__title">Active Recording Slot - <span id="activeRecordingSlotTitle">—</span></h2>
+      <p class="hint">Select the slot used for playback and recording. Clicking a slot button also points the Media Browser at that slot's files.</p>
       <div class="slot-switcher" id="currentSlotSwitcher" aria-label="Slot selector"></div>
 
       <div class="current-slot-info" id="currentSlotInfoSection">
@@ -444,17 +441,46 @@
             <div class="dash-cell__value current-slot-info__blocked" id="currentSlotInfoBlocked">—</div></div>
         </div>
       </div>
+    </div>
+
+    <!-- Media browser + deck files -->
+    <div class="card card--full" id="mediaBrowserCard">
+      <div class="card__title-row">
+        <h2 class="card__title">Media Browser - <span id="currentSlotMediaSlotId">—</span></h2>
+      </div>
+      <p class="hint">Browse files on media. Double-click a clip to add it to the timeline; clips can only be added from the root of the Active card slot.</p>
+
+      <div class="files-toolbar">
+        <span class="files-toolbar__label" id="filesToolbarLabel">View files:</span>
+        <div class="slot-switcher slot-switcher--browse" id="filesSlotButtons" aria-label="Slot media browser"></div>
+        <div class="btn-row">
+          <button type="button" class="btn btn--sm" data-action="filesPickUpload()" title="Upload clip(s) to the current folder">Upload</button>
+          <button type="button" class="btn btn--sm" data-action="filesNewFolder()" title="Create a folder in the current folder">New Folder</button>
+          <button type="button" class="btn btn--sm" data-action="filesRefresh()" title="Reload the current folder">Refresh</button>
+        </div>
+        <div class="files-breadcrumb" id="filesBreadcrumb"></div>
+      </div>
+      <input type="file" id="filesFileInput" multiple hidden data-change="filesHandleFilesInput(event)" />
+      <div class="files-progress" id="filesUploadProgress" hidden>
+        <div class="files-progress__bar"><div class="files-progress__fill" id="filesUploadFill"></div></div>
+        <span class="files-progress__label" id="filesUploadLabel"></span>
+      </div>
 
       <div class="clip-table-wrap">
         <table class="clip-table clip-table--resizable" id="currentSlotMediaTable">
           <thead>
             <tr>
-              <th style="width:72px">ID</th><th style="width:320px">Name / Path</th><th>File Format</th><th>Video Format</th><th>Duration</th><th>File Size</th>
+              <th style="width:320px" data-sort-key="name" title="Click to sort by Name"><span class="th-label">Name / Path</span><span class="th-sort-indicator" data-sort-indicator="name"></span></th>
+              <th data-sort-key="fileFormat" title="Click to sort by File Format"><span class="th-label">File Format</span><span class="th-sort-indicator" data-sort-indicator="fileFormat"></span></th>
+              <th data-sort-key="format" title="Click to sort by Video Format"><span class="th-label">Video Format</span><span class="th-sort-indicator" data-sort-indicator="format"></span></th>
+              <th data-sort-key="duration" title="Click to sort by Duration"><span class="th-label">Duration</span><span class="th-sort-indicator" data-sort-indicator="duration"></span></th>
+              <th data-sort-key="size" title="Click to sort by File Size"><span class="th-label">File Size</span><span class="th-sort-indicator" data-sort-indicator="size"></span></th>
+              <th style="width:120px">Download</th><th style="width:120px">Delete</th>
             </tr>
           </thead>
           <tbody id="currentSlotMediaTableBody">
-            <tr><td colspan="6" class="table-cell-empty">
-              Open the Media tab while connected to populate files for the active slot.</td></tr>
+            <tr><td colspan="7" class="table-cell-empty">
+              Open the Media tab while connected to populate files from each slot.</td></tr>
           </tbody>
         </table>
       </div>
@@ -858,6 +884,10 @@
       <h3 class="section-heading">Media Tab</h3>
       <div class="field-grid">
         <div class="field-row">
+          <label for="cfgShowMediaBrowser">Show Media Browser</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowMediaBrowser" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
           <label for="cfgShowMediaSlotInfo">Show Active Slot Info</label>
           <label class="toggle"><input type="checkbox" id="cfgShowMediaSlotInfo" checked /><span class="slider"></span></label>
         </div>
@@ -876,6 +906,10 @@
         <div class="field-row">
           <label for="cfgShowMediaFormatDisk">Show Format Disk</label>
           <label class="toggle"><input type="checkbox" id="cfgShowMediaFormatDisk" checked /><span class="slider"></span></label>
+        </div>
+        <div class="field-row">
+          <label for="cfgShowSlotSwitchWarning">Show warning when changing Active Slot</label>
+          <label class="toggle"><input type="checkbox" id="cfgShowSlotSwitchWarning" checked /><span class="slider"></span></label>
         </div>
       </div>
 

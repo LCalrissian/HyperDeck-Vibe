@@ -775,6 +775,34 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 .clip-table--v2 th:nth-child(7),
 .clip-table--v2 td:nth-child(7) { display: none; }
 
+/* ── Sortable column headings ───────────────────────────────────── */
+.clip-table th[data-sort-key] {
+  cursor: pointer;
+  user-select: none;
+}
+.clip-table th[data-sort-key]:hover {
+  background: var(--bg-hover);
+}
+.clip-table .th-sort-indicator {
+  font-size: var(--fs-xs);
+  margin-left: 2px;
+}
+.clip-table th.th-sorted {
+  color: var(--accent-blue);
+}
+
+/* ── Folder-Up row in Media Browser ─────────────────────────────── */
+.slot-media-folder-up-row {
+  cursor: pointer;
+}
+.slot-media-folder-up-row:hover td {
+  background: var(--bg-hover);
+}
+.slot-media-folder-up-name {
+  font-family: var(--font-ui) !important;
+  color: var(--text-secondary);
+}
+
 .slot-switcher {
   display: flex;
   flex-wrap: wrap;
@@ -813,15 +841,43 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
   cursor: not-allowed;
 }
 
-.slot-switcher__btn--switch {
-  background: var(--bg-input);
-  border: 1px dashed color-mix(in srgb, var(--accent-amber) 55%, transparent);
-  color: var(--accent-amber);
+/* Grey-but-clickable appearance for a drive browse button that is not the
+   active drive (e.g. NAS when another slot is active). Unlike --disabled the
+   button remains clickable so the user can trigger the slot-switch warning. */
+.slot-switcher__btn--drive-offline {
+  background: var(--bg-transport-idle);
+  border-color: var(--bg-transport-idle);
+  color: var(--text-muted);
 }
-.slot-switcher__btn--switch:hover {
-  border-color: var(--accent-amber);
-  background: color-mix(in srgb, var(--accent-amber) 12%, transparent);
-  color: var(--accent-amber);
+
+/* Slot browse buttons (media browser) - distinct from the active-slot switcher. */
+.slot-switcher--browse {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+.slot-switcher__btn--browse {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.slot-switcher__btn--browse:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+.slot-switcher__btn--browse-current {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+.slot-switcher__btn--browse-active {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: var(--text-on-accent);
+  font-weight: 600;
+}
+.files-toolbar__label {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .current-slot-info {
@@ -880,8 +936,8 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
   min-width: 0;
 }
 
-#currentSlotMediaTable th:nth-child(2),
-#currentSlotMediaTable td:nth-child(2) {
+#currentSlotMediaTable th:nth-child(1),
+#currentSlotMediaTable td:nth-child(1) {
   width: 22% !important;
   min-width: 0;
 }
@@ -897,8 +953,8 @@ input:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
     width: 14% !important;
   }
 
-  #currentSlotMediaTable th:nth-child(2),
-  #currentSlotMediaTable td:nth-child(2) {
+  #currentSlotMediaTable th:nth-child(1),
+  #currentSlotMediaTable td:nth-child(1) {
     width: 14% !important;
   }
 }
@@ -1104,4 +1160,96 @@ hr.divider {
     z-index: 0;
   }
 }
+
+/* ── Deck Files panel ─────────────────────────────────────── */
+.files-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+  align-items: center;
+  margin-top: var(--sp-sm);
+}
+.files-toolbar .btn-row {
+  margin-left: auto;
+}
+.files-mount-select {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  max-width: 240px;
+}
+.files-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--fs-sm);
+  flex: 1 1 100%;
+}
+.files-breadcrumb__item {
+  background: none;
+  border: none;
+  color: var(--accent-blue);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+}
+.files-breadcrumb__item:hover {
+  text-decoration: underline;
+  background: var(--bg-hover);
+}
+.files-breadcrumb__item--current {
+  color: var(--text);
+  font-weight: 600;
+  cursor: default;
+}
+.files-breadcrumb__item--current:hover {
+  text-decoration: none;
+  background: none;
+}
+.files-breadcrumb__sep { color: var(--text-secondary); }
+.files-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-sm);
+}
+.files-progress__bar {
+  flex: 1;
+  height: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+.files-progress__fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent-green);
+  transition: width .2s;
+}
+.files-progress__label {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.files-row--dir .files-name-cell {
+  cursor: pointer;
+  font-weight: 600;
+}
+.files-row--dir .files-name-cell:hover { color: var(--accent-blue); }
+.slot-media-folder-name {
+  cursor: pointer;
+  font-weight: 600;
+}
+.slot-media-folder-name:hover { color: var(--accent-amber); }
+.files-folder-icon { font-size: var(--fs-sm); }
+.files-size-cell, .files-mtime-cell { white-space: nowrap; }
+.files-action-btn { min-width: 22px !important; }
+.files-download-link { text-decoration: none; }
+.files-download-link:hover { text-decoration: none; filter: brightness(.92); }
 
